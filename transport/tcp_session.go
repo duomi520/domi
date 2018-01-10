@@ -158,7 +158,7 @@ func (s *SessionTCP) WriteFrameDataToQueue(f *FrameSlice) error {
 				buf:     s.wBuf.buf,
 				w:       s.wBuf.w,
 			}
-			err = s.dispatcher.PutJob(ns)
+			s.dispatcher.JobQueue <- ns
 			s.wBuf.buf = util.BytesPoolGet()
 			s.wBuf.w = f.WriteToBytes(s.wBuf.buf)
 		}
@@ -179,7 +179,7 @@ func (s *SessionTCP) waitToSend() {
 		buf:     s.wBuf.buf,
 		w:       s.wBuf.w,
 	}
-	s.dispatcher.PutJob(ns)
+	s.dispatcher.JobQueue <- ns
 	s.wBuf.w = -1
 	s.wBuf.buf = nil
 	s.wBuf.ready = true

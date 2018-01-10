@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+//需先启动 consul agent -dev -data-dir=.
 func Test_RegisterServer(t *testing.T) {
 	var err error
 	ctx, ctxExitFunc := context.WithCancel(context.Background())

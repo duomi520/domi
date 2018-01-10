@@ -14,12 +14,11 @@ func Test_Dispatcher(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		var td testDoJob1
 		td.i = i
-		d.PutJob(td)
+		d.JobQueue <- td
 	}
 	time.Sleep(150 * time.Millisecond)
 	ctxExitFunc()
 	time.Sleep(150 * time.Millisecond)
-	fmt.Println(d.currentWorkersCount, len(d.workerPool))
 }
 
 type testDoJob1 struct {
@@ -33,20 +32,15 @@ func (td testDoJob1) WorkFunc() {
 func Test_Dispatcher_Check(t *testing.T) {
 	ctx, ctxExitFunc := context.WithCancel(context.Background())
 	d := NewDispatcher(ctx, "d2", 30)
-	d.dispatcherCheckDuration = 200 * time.Millisecond
+	d.DispatcherCheckDuration = 200 * time.Millisecond
 	go d.Run()
 	var td testDoJob2
 	for i := 0; i < 10; i++ {
-		d.PutJob(td)
+		d.JobQueue <- td
 	}
-	fmt.Println(d.currentWorkersCount, len(d.workerPool))
-	time.Sleep(250 * time.Millisecond)
-	fmt.Println(d.currentWorkersCount, len(d.workerPool))
-	time.Sleep(150 * time.Millisecond)
-	fmt.Println(d.currentWorkersCount, len(d.workerPool))
+	time.Sleep(500 * time.Millisecond)
 	ctxExitFunc()
 	time.Sleep(150 * time.Millisecond)
-	fmt.Println(d.currentWorkersCount, len(d.workerPool))
 }
 
 type testDoJob2 struct {

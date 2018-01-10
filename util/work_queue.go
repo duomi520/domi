@@ -8,7 +8,7 @@ import (
 )
 
 //MaxQueue 队列最大缓存数
-const MaxQueue = 1024
+const MaxQueue = 2048
 
 //Job 任务
 type Job interface {
@@ -17,52 +17,58 @@ type Job interface {
 
 //Worker 工作者
 type Worker struct {
-	dispatcher *Dispatcher
-	jobChan    chan Job
+	dispatcherWorkStopChan chan struct{}
+	dispatcherWorkerQueue  chan chan Job
+	jobChan                chan Job
 }
 
 //NewWorker 新建
-func NewWorker(d *Dispatcher) *Worker {
+func NewWorker(s chan struct{}, w chan chan Job) *Worker {
 	return &Worker{
-		dispatcher: d,
-		jobChan:    make(chan Job),
+		dispatcherWorkStopChan: s,
+		dispatcherWorkerQueue:  w,
+		jobChan:                make(chan Job),
 	}
 }
 
 //run 运行
 func (w *Worker) run() {
 	for {
-		j := <-w.jobChan
-		if j == nil {
-			break
+		select {
+		case j := <-w.jobChan:
+			if j == nil {
+				goto end
+			}
+			j.WorkFunc()
+			w.dispatcherWorkerQueue <- w.jobChan
+		case <-w.dispatcherWorkStopChan:
+			goto end
 		}
-		j.WorkFunc()
-		w.dispatcher.WorkerQueue <- w.jobChan
 	}
+end:
+	w.dispatcherWorkStopChan = nil
+	w.dispatcherWorkerQueue = nil
 	close(w.jobChan)
 }
 
-//Dispatcher 调度者
+//Dispatcher 调度者,控制io发送
 type Dispatcher struct {
 	Ctx  context.Context
 	Name string
 
 	JobQueue    chan Job      //任务队列
-	WorkerQueue chan chan Job //工作者队列
+	workerQueue chan chan Job //空闲工作者队列
 
-	currentWorkersCount     int
-	dispatcherCheckDuration time.Duration //定时释放闲置的协程
-	workerPool              []chan Job
+	DispatcherCheckDuration time.Duration //释放闲置的协程的时间间隔
 	maxworkerPoolCount      int           //池最大的协程数
-	stopChan                chan struct{} //退出信号
-	stopFlag                int32         //退出标志
+	stopChan, workStopChan  chan struct{} //退出信号
 	closeOnce               sync.Once
 	logger                  *Logger
 	WaitGroupWrapper
 }
 
 //NewDispatcher 新建
-func NewDispatcher(ctx context.Context, name string, maxWorkers int) *Dispatcher {
+func NewDispatcher(ctx context.Context, name string, maxCount int) *Dispatcher {
 	logger, _ := NewLogger(DebugLevel, "")
 	logger.SetMark("Dispatcher." + name)
 	d := &Dispatcher{
@@ -70,88 +76,77 @@ func NewDispatcher(ctx context.Context, name string, maxWorkers int) *Dispatcher
 		Name: name,
 
 		JobQueue:    make(chan Job, MaxQueue),
-		WorkerQueue: make(chan chan Job, MaxQueue),
+		workerQueue: make(chan chan Job, MaxQueue),
 
-		currentWorkersCount:     0,
-		dispatcherCheckDuration: 2 * time.Second,
-		workerPool:              make([]chan Job, maxWorkers),
-		maxworkerPoolCount:      maxWorkers,
+		DispatcherCheckDuration: 5 * time.Second,
+		maxworkerPoolCount:      maxCount,
 		stopChan:                make(chan struct{}),
+		workStopChan:            make(chan struct{}),
 		logger:                  logger,
 	}
-	for i := 0; i < d.maxworkerPoolCount; i++ {
-		worker := NewWorker(d)
-		d.workerPool[i] = worker.jobChan
-		d.Wrap(worker.run)
-	}
 	return d
-}
-
-//PutJob 入队操作
-//多路复用，运行任务的顺序是打乱的。
-func (d *Dispatcher) PutJob(j Job) error {
-	d.JobQueue <- j
-	return nil
 }
 
 //Run 运行
 func (d *Dispatcher) Run() {
 	d.logger.Info("Run|调度守护启动……")
-	workingNum := runtime.NumCPU() + 4
-	check := time.NewTicker(d.dispatcherCheckDuration)
-	var ch chan Job
+	check := time.NewTicker(d.DispatcherCheckDuration)
+	minimumWorker := runtime.NumCPU() + 8
+	//初始化空闲工作者池
+	workerPool := make([]chan Job, d.maxworkerPoolCount)
+	for i := 0; i < d.maxworkerPoolCount; i++ {
+		worker := NewWorker(d.workStopChan, d.workerQueue)
+		workerPool[i] = worker.jobChan
+		d.Wrap(worker.run)
+	}
 	for {
 		select {
-		case <-check.C:
-			//定时释放空闲的协程。
-			n := len(d.workerPool)
-			if n > workingNum {
-				for i := workingNum; i < n; i++ {
-					d.workerPool[i] <- nil
-				}
-				d.workerPool = d.workerPool[:workingNum]
-			}
-		case jobChannel := <-d.WorkerQueue:
+		case jobChannel := <-d.workerQueue:
 			//超出池上限的协程释放。
-			if len(d.workerPool) >= d.maxworkerPoolCount {
+			if len(workerPool) >= d.maxworkerPoolCount {
 				//通知工作者关闭。
 				jobChannel <- nil
 			} else {
-				d.workerPool = append(d.workerPool, jobChannel)
+				//放入池。
+				workerPool = append(workerPool, jobChannel)
 			}
-			d.currentWorkersCount--
+		//多路复用，运行任务的顺序是打乱的。
 		case job := <-d.JobQueue:
-			n := len(d.workerPool) - 1
+			n := len(workerPool) - 1
 			if n < 0 {
 				//池中协程用完后，新建协程，牺牲内存抗峰值。
-				worker := NewWorker(d)
+				worker := NewWorker(d.workStopChan, d.workerQueue)
 				d.Wrap(worker.run)
-				ch = worker.jobChan
+				worker.jobChan <- job
 			} else {
-				ch = d.workerPool[n]
-				d.workerPool[n] = nil
-				d.workerPool = d.workerPool[:n]
+				workerPool[n] <- job
+				workerPool[n] = nil
+				workerPool = workerPool[:n]
 			}
-			d.currentWorkersCount++
-			ch <- job
-		case <-d.stopChan:
-			goto end
+
+		case <-check.C:
+			//定时释放空闲的协程。
+			n := len(workerPool)
+			if n > minimumWorker {
+				for i := minimumWorker; i < n; i++ {
+					workerPool[i] <- nil
+				}
+				workerPool = workerPool[:minimumWorker]
+			}
 		case <-d.Ctx.Done():
 			d.Close()
+		case <-d.stopChan:
+			goto end
 		}
 	}
 end:
-	ch = nil
-	d.logger.Info("Run|等待子协程关闭。")
-	for i := 0; i < len(d.workerPool); i++ {
-		d.workerPool[i] <- nil
-	}
+	d.logger.Info("Run|等待工作者关闭。")
+	check.Stop()
+	close(d.workStopChan)
 	d.Wait()
 	d.logger.Info("Run|调度守护关闭。")
-	close(d.WorkerQueue)
-	check.Stop()
-	d.workerPool = nil
-	//	close(d.JobQueue)
+	//close(d.workerQueue)
+	//close(d.JobQueue)
 }
 
 //Close 关闭
