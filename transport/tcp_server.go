@@ -2,15 +2,14 @@
 
 import (
 	"context"
+	"github.com/duomi520/domi/util"
 	"io"
 	"net"
 	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
-	"sync/atomic"
-
-	"github.com/duomi520/domi/util"
+	"time"
 )
 
 //ServerTCP TCP服务
@@ -25,10 +24,8 @@ type ServerTCP struct {
 	OnNewSessionTCP   func(Session)
 	OnCloseSessionTCP func(Session)
 
-	stopChan  chan struct{} //退出信号
 	closeOnce sync.Once
 	Logger    *util.Logger
-	closeFlag int32 //关闭状态
 	util.WaitGroupWrapper
 }
 
@@ -44,6 +41,10 @@ func NewServerTCP(ctx context.Context, post string, h *Handler, sfID *util.SnowF
 		logger.Error("NewServerTCP|Handler不为nil")
 		return nil
 	}
+	if d == nil {
+		logger.Error("NewServerTCP|Dispatcher不为nil")
+		return nil
+	}
 	tcpAddress, err := net.ResolveTCPAddr("tcp4", post)
 	listener, err := net.ListenTCP("tcp", tcpAddress)
 	if err != nil {
@@ -57,23 +58,11 @@ func NewServerTCP(ctx context.Context, post string, h *Handler, sfID *util.SnowF
 		tcpListener: listener,
 		tcpPost:     post,
 		handler:     h,
-		stopChan:    make(chan struct{}),
 		Logger:      logger,
-		closeFlag:   0,
 	}
 	go func() {
-		select {
-		case <-s.Ctx.Done():
-		case <-s.stopChan:
-		}
-		err := s.tcpListener.Close()
-		if v := ctx.Value(util.KeyExitFlag); v != nil {
-			atomic.StoreInt32(&s.closeFlag, *(v.(*int32)))
-		}
-		s.Logger.Info("NewTCPServer|监听关闭。")
-		if err != nil {
-			s.Logger.Error("NewTCPServer|监听关闭失败:", err)
-		}
+		<-s.Ctx.Done()
+		s.Close()
 	}()
 	return s
 }
@@ -81,17 +70,16 @@ func NewServerTCP(ctx context.Context, post string, h *Handler, sfID *util.SnowF
 //Close 关闭监听
 func (s *ServerTCP) Close() {
 	s.closeOnce.Do(func() {
-		close(s.stopChan)
+		if err := s.tcpListener.Close(); err != nil {
+			s.Logger.Error("Close|监听关闭失败:", err)
+		} else {
+			s.Logger.Info("Close|监听关闭。")
+		}
 	})
 }
 
 //Run 运行
 func (s *ServerTCP) Run() {
-	s.tcpServer()
-}
-
-//tcpServer 服务监听
-func (s *ServerTCP) tcpServer() {
 	s.Logger.Info("tcpServer|TCP监听端口", s.tcpPost)
 	s.Logger.Info("tcpServer|已初始化连接，等待客户端连接……")
 	for {
@@ -115,83 +103,98 @@ func (s *ServerTCP) tcpServer() {
 		if err = conn.SetNoDelay(false); err != nil {
 			s.Logger.Error("tcpServer|设定操作系统是否应该延迟数据包传递失败:" + err.Error())
 		}
-		session := NewSessionTCP(conn)
-		session.ID = id
-		session.dispatcher = s.dispatcher
-		go func(ts *SessionTCP) {
-			s.Add(1)
-			defer s.Done()
-			defer ts.Close()
-			defer ts.Conn.Close()
-			var pm uint32
-			var err error
-			if pm, err = ts.readUint32(); err != nil {
-				s.Logger.Error("tcpServer|读取协议头失败:", err)
-				return
-			}
-			if !protocolMagic(pm) {
-				s.Logger.Warn("tcpServer|警告: 无效的协议头。")
-				return
-			}
-			if _, err = ts.Conn.Write(util.Int64ToBytes(ts.ID)); err != nil {
-				s.Logger.Error("tcpServer|写入ID失败:" + err.Error())
-				return
-			}
-			if s.OnNewSessionTCP != nil {
-				s.OnNewSessionTCP(ts)
-			}
-			s.receiveLoop(ts)
-			if s.OnCloseSessionTCP != nil {
-				s.OnCloseSessionTCP(ts)
-			}
-		}(session)
+
+		go tcpReceive(s, id, conn)
 	}
 	s.Logger.Debug("tcpServer|等待子协程关闭。")
 	s.Wait()
 	s.Logger.Info("tcpServer|关闭。")
 }
 
-//receiveLoop 接收
-//
-func (s *ServerTCP) receiveLoop(se *SessionTCP) {
+//tcpReceive 接收
+func tcpReceive(s *ServerTCP, id int64, conn *net.TCPConn) {
 	defer func() {
 		if r := recover(); r != nil {
-			s.Logger.Error("receiveLoop|defer错误：", r, string(debug.Stack()))
+			s.Logger.Error("tcpReceive|defer错误：", r, string(debug.Stack()))
 		}
 	}()
+	session := NewSessionTCP(conn)
+	session.ID = id
+	session.dispatcher = s.dispatcher
+	s.Add(1)
+	defer func() {
+		session.Wait()
+		session.Conn.Close()
+		session.Release()
+		s.Done()
+	}()
+	var pm uint32
 	var err error
-	for {
-		if atomic.LoadInt32(&s.closeFlag) == 1 {
-			goto end
-		}
-		if err = se.ioRead(); err != nil {
-			goto end
-		}
-		//	fmt.Println("dd", se.rBuf[0:26], se.r, se.w)
-		se.readFrameData()
-		for i := 0; i < len(se.frameSlices); i++ {
-			se.currentFrameSlice = i
-			switch se.frameSlices[i].GetFrameType() {
-			case FrameTypeHeartbeat:
-				if err = se.WriteFrameDataPromptly(FrameHeartbeat); err != nil {
-					goto end
-				}
-				continue
-			case FrameTypeExit:
-				goto end
-			}
-			if err = s.handler.Route(se); err != nil {
-				goto end
-			}
-		}
+	if pm, err = session.readUint32(); err != nil {
+		s.Logger.Error("tcpReceive|读取协议头失败:", err)
+		return
 	}
-end:
+	if !protocolMagic(pm) {
+		s.Logger.Warn("tcpReceive|警告: 无效的协议头。")
+		return
+	}
+	if err = session.Conn.SetWriteDeadline(time.Now().Add(DefaultDeadlineDuration)); err != nil {
+		s.Logger.Error("tcpReceive|写入ID超时:" + err.Error())
+		return
+	}
+	if _, err = session.Conn.Write(util.Int64ToBytes(session.ID)); err != nil {
+		s.Logger.Error("tcpReceive|写入ID失败:" + err.Error())
+		return
+	}
+	if s.OnNewSessionTCP != nil {
+		s.OnNewSessionTCP(session)
+	}
+	err = s.ioLoop(session)
+	if s.OnCloseSessionTCP != nil {
+		s.OnCloseSessionTCP(session)
+	}
 	if err == io.EOF {
 		err = nil
 	}
 	if err != nil {
-		s.Logger.Error("receiveLoop|错误：", se.Conn.RemoteAddr(), " err:", err)
+		if !strings.Contains(err.Error(), "wsarecv: An existing connection was forcibly closed by the remote host.") {
+			s.Logger.Error("tcpReceive|错误断开：", session.Conn.RemoteAddr(), " err:", err)
+			return
+		}
 	}
-	se.WriteFrameDataPromptly(FrameExit) //通知客户端关闭
-	s.Logger.Debug("receiveLoop|连接断开：", se.Conn.RemoteAddr(), " err:", err)
+	s.Logger.Debug("tcpReceive|连接断开：", session.Conn.RemoteAddr(), " err:", err)
+}
+
+//ioLoop 接收
+func (s *ServerTCP) ioLoop(session *SessionTCP) error {
+	defer func() {
+		if r := recover(); r != nil {
+			s.Logger.Error("ioLoop|defer错误：", r, string(debug.Stack()))
+		}
+	}()
+	for {
+		if err := session.ioRead(); err != nil {
+			return err
+		}
+		ft := session.getFrameType()
+		for ft > FrameTypeNil {
+			l := int(util.BytesToUint32(session.rBuf[session.r : session.r+4]))
+			if ft > FrameTypeExit {
+				if err := s.handler.Route(session); err != nil {
+					return err
+				}
+			} else {
+				if ft == FrameTypeExit {
+					return nil
+				}
+				if ft == FrameTypeHeartbeat {
+					if err := session.WriteFrameDataPromptly(FrameHeartbeat); err != nil {
+						return nil
+					}
+				}
+			}
+			session.r += l
+			ft = session.getFrameType()
+		}
+	}
 }

@@ -30,6 +30,7 @@ func NewGateway(ctx context.Context, o NodeOptions) *Gateway {
 		addNodeChan:    make(chan nodeArgs, 100),
 		removeNodeChan: make(chan nodeArgs, 100),
 	}
+	//
 	g.Node = NewNode(ctx, o)
 	g.Logger = logger
 	g.HandleFunc(transport.FrameTypeGateToNextZoneFunc, g.toNextZoneFunc)
@@ -46,7 +47,6 @@ func NewGateway(ctx context.Context, o NodeOptions) *Gateway {
 	}
 	//
 	if len(g.options.TCPPort) > 0 {
-		g.dispatcher = util.NewDispatcher(g.sequence.Ctx[2], "Gateway", 256)
 		g.tcpServer.OnNewSessionTCP = g.addSessionTCP
 		g.tcpServer.OnCloseSessionTCP = g.removeSessionTCP
 	}

@@ -19,6 +19,7 @@ var pong = []byte("pong")
 func main() {
 	fmt.Println("本地机器的逻辑CPU个数:", runtime.NumCPU())
 	testN(100)
+	testN(500)
 	testN(1000)
 	testN(2500)
 	//
@@ -26,7 +27,6 @@ func main() {
 	clientN(500)
 	clientN(1000)
 	clientN(2500)
-	clientN(5000)
 }
 func testN(num int) {
 	sessions := make([]*transport.SessionTCP, num)
@@ -38,7 +38,8 @@ func testN(num int) {
 			os.Exit(1)
 		}
 	}
-	time.Sleep(1000 * time.Millisecond)
+	fmt.Printf("测试 ")
+	time.Sleep(2000 * time.Millisecond)
 	start := time.Now()
 	for j := 0; j < 500; j++ {
 		k := j
@@ -55,7 +56,6 @@ func testN(num int) {
 					fmt.Println("+ioRead", jj, l, index, n, err)
 					os.Exit(1)
 				}
-
 			}
 			wg.Done()
 		}(k, sessions)
@@ -67,7 +67,6 @@ func testN(num int) {
 	for c := 0; c < num; c++ {
 		sessions[c].WriteFrameDataPromptly(transport.FrameExit)
 		sessions[c].Conn.Close()
-		sessions[c].Close()
 	}
 }
 func dial() *transport.SessionTCP {
@@ -85,19 +84,18 @@ func dial() *transport.SessionTCP {
 		conn.Close()
 		return nil
 	}
-	go func(tc *net.TCPConn) {
-		buf := make([]byte, 8)
-		if _, err = conn.Read(buf); err != nil {
-			fmt.Println("ID:", err)
-			tc.Close()
-		}
-	}(conn)
+	buf := make([]byte, 8)
+	if _, err = conn.Read(buf); err != nil {
+		conn.Close()
+		return nil
+	}
 	return session
 }
 
 var clientNwg sync.WaitGroup
 
 func clientN(num int) {
+	loop := 25000000
 	//	f, _ := os.Create("profile.mem")
 	//	defer f.Close()
 	var err error
@@ -115,24 +113,24 @@ func clientN(num int) {
 		go cs[k].Run()
 		time.Sleep(1 * time.Millisecond) //防止连接太快，被操作系统拒绝。
 	}
-	time.Sleep(1000 * time.Millisecond)
+	time.Sleep(2000 * time.Millisecond)
 	fmt.Printf("测试 ")
-	clientNwg.Add(25000000)
+	clientNwg.Add(loop)
 	start := time.Now()
-	for i := 0; i < 25000000; i++ {
+	for i := 0; i < loop; i++ {
 		index := i % num
-		cs[index].SendToQueue(transport.FramePing)
+		cs[index].Send(transport.FramePing)
 		//cs[index].Csession.WriteFrameDataPromptly(transport.FramePing)
 	}
 	clientNwg.Wait()
 	end := time.Now()
-	qps := 25000000.0 / end.Sub(start).Seconds()
-	fmt.Printf("%d个连接qps:%6.0f\n", num, qps)
+	qps := float64(loop) / end.Sub(start).Seconds()
+	fmt.Printf("%d个连接及协程qps:%6.0f\n", num, qps)
 	//	pprof.WriteHeapProfile(f)
+	time.Sleep(time.Second)
 	for i := 0; i < num; i++ {
 		cs[i].Close()
 	}
-	time.Sleep(time.Second)
 	cs = nil
 }
 

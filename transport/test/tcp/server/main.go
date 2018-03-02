@@ -26,8 +26,10 @@ func main() {
 	m.Run()
 }
 func ping(s transport.Session) {
-	if err := s.WriteFrameDataToQueue(transport.FramePong); err != nil {
+	if err := s.WriteFrameDataToCache(transport.FramePong); err != nil {
 		fmt.Println("ping:", err.Error())
 	}
-	//s.WriteFrameDataPromptly(transport.FramePong)
+	//	if err := s.WriteFrameDataPromptly(transport.FramePong); err != nil {
+	//		fmt.Println("ping:", err.Error())
+	//	}
 }

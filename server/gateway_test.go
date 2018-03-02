@@ -62,6 +62,7 @@ func Test_gateway(t *testing.T) {
 			t.Error(err)
 		}
 	}
+	time.Sleep(150 * time.Millisecond)
 	//
 	ids2, _ := g.CallServer(c2.Csession.ID, "Node", ":8090")
 	if ids2 == 0 {

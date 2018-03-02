@@ -28,6 +28,7 @@ func NewHandler() *Handler {
 }
 
 //HandleFunc 添加处理器 线程不安全，需在初始化时设置完毕，服务启动后不能再添加。
+//处理函数避免阻塞。
 func (h *Handler) HandleFunc(u16 uint16, f func(Session)) {
 	h.recvWorker[u16] = f
 }
@@ -56,7 +57,7 @@ type Session interface {
 	GetID() int64
 	GetFrameSlice() *FrameSlice //帧指向的空间将在下次io读取时被覆盖。
 	WriteFrameDataPromptly(*FrameSlice) error
-	WriteFrameDataToQueue(*FrameSlice) error
+	WriteFrameDataToCache(*FrameSlice) error
 }
 
 //protocolMagic 判断协议头是否有效

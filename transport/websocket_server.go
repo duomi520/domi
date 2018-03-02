@@ -22,7 +22,7 @@ type ServerWebsocket struct {
 	stopChan          chan struct{} //退出信号
 	closeOnce         sync.Once
 	Logger            *util.Logger
-	closeFlag         int32 //关闭状态
+	closeFlag         int32 //关闭标志
 	util.WaitGroupWrapper
 }
 
@@ -185,8 +185,8 @@ func (s *SessionWebsocket) WriteFrameDataPromptly(f *FrameSlice) error {
 	return err
 }
 
-//WriteFrameDataToQueue 同WriteFrameDataPromptly
-func (s *SessionWebsocket) WriteFrameDataToQueue(f *FrameSlice) error {
+//WriteFrameDataToCache 同WriteFrameDataPromptly
+func (s *SessionWebsocket) WriteFrameDataToCache(f *FrameSlice) error {
 	return s.WriteFrameDataPromptly(f)
 }
 

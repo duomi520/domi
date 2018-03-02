@@ -14,7 +14,7 @@ func Test_Dispatcher(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		var td testDoJob1
 		td.i = i
-		d.JobQueue <- td
+		d.PutJob(td)
 	}
 	time.Sleep(150 * time.Millisecond)
 	ctxExitFunc()
@@ -36,7 +36,7 @@ func Test_Dispatcher_Check(t *testing.T) {
 	go d.Run()
 	var td testDoJob2
 	for i := 0; i < 10; i++ {
-		d.JobQueue <- td
+		d.PutJob(td)
 	}
 	time.Sleep(500 * time.Millisecond)
 	ctxExitFunc()

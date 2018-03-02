@@ -23,7 +23,7 @@ const (
 	FrameTypeExit
 	FrameTypePing
 	FrameTypePong
-	FrameType5
+	FrameTypeOverflow
 	FrameType6
 	FrameType7
 	FrameTypeGateToNextZoneFunc
@@ -43,6 +43,7 @@ var (
 	FrameExit      *FrameSlice
 	FramePing      *FrameSlice
 	FramePong      *FrameSlice
+	FrameOverflow  *FrameSlice
 )
 
 //初始化
@@ -53,6 +54,10 @@ func init() {
 	FrameExit = DecodeByBytes(buf[16:24])
 	FramePing = DecodeByBytes(buf[24:36])
 	FramePong = DecodeByBytes(buf[36:48])
+	overflow := make([]byte, util.BytesPoolLenght+8)
+	copy(overflow[0:4], util.Uint32ToBytes(uint32(util.BytesPoolLenght+8)))
+	copy(overflow[6:8], util.Uint16ToBytes(FrameTypeOverflow))
+	FrameOverflow = DecodeByBytes(overflow)
 }
 
 //FrameSlice 帧切片

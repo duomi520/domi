@@ -4,7 +4,9 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/duomi520/domi/util"
 )
@@ -16,18 +18,14 @@ var (
 
 //SessionTCP 会话
 type SessionTCP struct {
-	ID   int64
-	Conn *net.TCPConn
-
+	ID         int64
+	Conn       *net.TCPConn
 	dispatcher *util.Dispatcher
-	wBuf       *WriteBuf
-
-	rBuf              []byte
-	r, w              int           //rBuf 读写位置序号
-	frameSlices       []*FrameSlice //每次io读取，切片指向的数据将被写入新数据。
-	currentFrameSlice int
-
-	closeOnce sync.Once
+	rBuf       []byte
+	w          int //rBuf 读位置序号
+	r          int //rBuf 写位置序号
+	wSlot      *slot
+	sync.WaitGroup
 }
 
 //NewSessionTCP 新建
@@ -38,37 +36,48 @@ func NewSessionTCP(conn *net.TCPConn) *SessionTCP {
 		r:    0,
 		w:    0,
 	}
-	s.wBuf = &WriteBuf{
-		session: s,
-		w:       -1,
-		ready:   true,
-	}
+	s.wSlot = newSlot(s)
 	return s
 }
 
 //GetID 取得ID
 func (s *SessionTCP) GetID() int64 { return s.ID }
 
-//GetFrameSlice 取得当前帧
+//GetFrameSlice 取得当前帧,线程不安全,必要时先拷贝。
 func (s *SessionTCP) GetFrameSlice() *FrameSlice {
-	if len(s.frameSlices) == 0 {
+	if s.w < s.r+FrameHeadLength {
 		return nil
 	}
-	return s.frameSlices[s.currentFrameSlice]
+	length := int(util.BytesToUint32(s.rBuf[s.r : s.r+4]))
+	if s.r+length <= s.w {
+		frameSlice := DecodeByBytes(s.rBuf[s.r : s.r+length])
+		return frameSlice
+	}
+	return nil
 }
 
-//Close 关闭
-func (s *SessionTCP) Close() {
-	s.closeOnce.Do(func() {
-		util.BytesPoolPut(s.rBuf)
-		for _, v := range s.frameSlices {
-			v.Release()
-		}
-		s.frameSlices = nil
-	})
+//getFrameType 取得当前帧类型
+func (s *SessionTCP) getFrameType() uint16 {
+	if s.w < s.r+FrameHeadLength {
+		return 0
+	}
+	length := int(util.BytesToUint32(s.rBuf[s.r : s.r+4]))
+	if s.r+length > s.w {
+		return 0
+	}
+	return util.BytesToUint16(s.rBuf[s.r+6 : s.r+8])
+}
+
+//Release 释放
+func (s *SessionTCP) Release() {
+	util.BytesPoolPut(s.rBuf)
+	if s.wSlot != nil {
+		util.BytesPoolPut(s.wSlot.buf)
+	}
 }
 
 //ioRead 读数据到rBuf，注意：每次ioRead,rBuf中的数据将被写入新数据。
+//注意线程不安全
 func (s *SessionTCP) ioRead() error {
 	if s.r > 0 {
 		if s.r < s.w {
@@ -90,114 +99,58 @@ func (s *SessionTCP) ioRead() error {
 	return err
 }
 
-//readFrameData 顺序从缓存中读取帧数据
-func (s *SessionTCP) readFrameData() {
-	s.currentFrameSlice = 0
-	s.frameSlices = s.frameSlices[:0]
-	for {
-		if s.w < s.r+FrameHeadLength {
-			return
-		}
-		length := int(util.BytesToUint32(s.rBuf[s.r : s.r+4]))
-		//Mark
-		if s.r+length <= s.w {
-			frameSlice := DecodeByBytes(s.rBuf[s.r : s.r+length])
-			s.frameSlices = append(s.frameSlices, frameSlice)
-			s.r += length
-		} else {
-			return
-		}
-	}
-}
-
 //WriteFrameDataPromptly 立即发送数据 without delay
 func (s *SessionTCP) WriteFrameDataPromptly(f *FrameSlice) error {
 	var err error
 	if f.GetFrameLength() >= FrameHeadLength {
-		buf := util.BytesPoolGet()
-		f.WriteToBytes(buf)
 		if err = s.Conn.SetWriteDeadline(time.Now().Add(DefaultDeadlineDuration)); err != nil {
-			util.BytesPoolPut(buf)
 			return err
 		}
-		_, err = s.Conn.Write(buf[:f.GetFrameLength()])
-		util.BytesPoolPut(buf)
+		_, err = s.Conn.Write(f.base)
 	}
 	return err
 }
 
-//WriteBuf 待发送数据的缓存
-type WriteBuf struct {
-	session *SessionTCP
-	buf     []byte
-	w       int  //buf 写位置序号
-	ready   bool //延时发送信号，true：可以延时发送，false：已经有延时发送
-	sync.Mutex
-}
+//DefaultDelayedSend 延迟发送的时间间隔
+const DefaultDelayedSend time.Duration = time.Millisecond * 2
 
-//waitForCache
-const waitForCacheDuration = 1000 * time.Microsecond
-
-//WriteFrameDataToQueue 写入发送队列
-//TODO：返回累积太多未发送数据的错误
-//TODO: 高链接下锁的性能影响不大，对链接较少的后段服务器，影响较大，待测试后优化。
-func (s *SessionTCP) WriteFrameDataToQueue(f *FrameSlice) error {
-	var err error
-	s.wBuf.Lock()
-	defer s.wBuf.Unlock()
-	if s.wBuf.w == -1 {
-		s.wBuf.buf = util.BytesPoolGet()
-		s.wBuf.w = f.WriteToBytes(s.wBuf.buf)
-	} else {
-		if (s.wBuf.w + f.GetFrameLength()) < util.BytesPoolLenght {
-			n := f.WriteToBytes(s.wBuf.buf[s.wBuf.w:])
-			s.wBuf.w += n
-		} else {
-			ns := &WriteBuf{
-				session: s,
-				buf:     s.wBuf.buf,
-				w:       s.wBuf.w,
+//WriteFrameDataToCache 写入发送缓存
+func (s *SessionTCP) WriteFrameDataToCache(f *FrameSlice) error {
+	myslot := (*slot)(atomic.LoadPointer((*unsafe.Pointer)(unsafe.Pointer(&s.wSlot))))
+	length := int32(f.GetFrameLength())
+	end := atomic.AddInt32(&myslot.allotCursor, length)
+	start := end - length
+	if end >= int32(util.BytesPoolLenght) {
+		//申请的地址超出边界
+		if start >= int32(util.BytesPoolLenght) {
+			time.Sleep(time.Millisecond)
+			return s.WriteFrameDataToCache(f)
+		}
+		//刚好越界触发
+		ns := newSlot(s)
+		atomic.SwapPointer((*unsafe.Pointer)(unsafe.Pointer(&s.wSlot)), unsafe.Pointer(ns))
+		if start > 0 {
+			//自旋等待其它协程提交
+			for atomic.LoadInt32(&myslot.availableCursor) != start {
 			}
-			s.dispatcher.JobQueue <- ns
-			s.wBuf.buf = util.BytesPoolGet()
-			s.wBuf.w = f.WriteToBytes(s.wBuf.buf)
+			s.Add(1)
+			if err := s.dispatcher.PutJob(myslot); err != nil {
+				s.Done()
+				return err
+			}
 		}
-	}
-	if s.wBuf.ready {
-		s.wBuf.ready = false
-		time.AfterFunc(waitForCacheDuration, s.waitToSend)
-	}
-	return err
-}
-
-//waitToSend 等待适当的数据再发送
-func (s *SessionTCP) waitToSend() {
-	s.wBuf.Lock()
-	defer s.wBuf.Unlock()
-	ns := &WriteBuf{
-		session: s,
-		buf:     s.wBuf.buf,
-		w:       s.wBuf.w,
-	}
-	s.dispatcher.JobQueue <- ns
-	s.wBuf.w = -1
-	s.wBuf.buf = nil
-	s.wBuf.ready = true
-}
-
-//WorkFunc 发送
-func (wb *WriteBuf) WorkFunc() {
-	defer util.BytesPoolPut(wb.buf)
-	if wb.w >= FrameHeadLength {
-		if err := wb.session.Conn.SetWriteDeadline(time.Now().Add(DefaultDeadlineDuration)); err != nil {
-			wb.session.Close()
-			return
+		if f.GetFrameLength() > util.BytesPoolLenght {
+			return nil
 		}
-		if _, err := wb.session.Conn.Write(wb.buf[:wb.w]); err != nil {
-			wb.session.Close()
-			return
-		}
+		return s.WriteFrameDataToCache(f)
 	}
+	f.WriteToBytes(myslot.buf[start:end])
+	atomic.AddInt32(&myslot.availableCursor, length)
+	//发出越界触发
+	if start == 0 {
+		time.AfterFunc(DefaultDelayedSend, func() { s.WriteFrameDataToCache(FrameOverflow) })
+	}
+	return nil
 }
 
 //readUint32 读uint32
@@ -224,4 +177,35 @@ func (s *SessionTCP) readInt64() (int64, error) {
 	}
 	i := int64(b[0]) | int64(b[1])<<8 | int64(b[2])<<16 | int64(b[3])<<24 | int64(b[4])<<32 | int64(b[5])<<40 | int64(b[6])<<48 | int64(b[7])<<56
 	return i, nil
+}
+
+//slot
+type slot struct {
+	session         *SessionTCP
+	buf             []byte
+	allotCursor     int32 //申请位置
+	availableCursor int32 //已提交位置
+}
+
+func newSlot(s *SessionTCP) *slot {
+	return &slot{
+		session:         s,
+		buf:             util.BytesPoolGet(),
+		allotCursor:     0,
+		availableCursor: 0,
+	}
+}
+
+//WorkFunc 发送
+func (ws *slot) WorkFunc() {
+	defer ws.session.Done()
+	defer util.BytesPoolPut(ws.buf)
+	if ws.availableCursor >= int32(FrameHeadLength) {
+		if err := ws.session.Conn.SetWriteDeadline(time.Now().Add(DefaultDeadlineDuration)); err != nil {
+			return
+		}
+		if _, err := ws.session.Conn.Write(ws.buf[:ws.availableCursor]); err != nil {
+			return
+		}
+	}
 }

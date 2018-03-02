@@ -61,7 +61,11 @@ func NewNode(ctx context.Context, o NodeOptions) *Node {
 	n.snowFlakeID = util.NewSnowFlakeID(int64(n.Peer.ID), time.Now().UnixNano())
 	//tcp支持
 	if len(n.options.TCPPort) > 0 {
+		n.dispatcher = util.NewDispatcher(n.sequence.Ctx[2], "Node", 256)
 		n.tcpServer = transport.NewServerTCP(n.sequence.Ctx[0], n.options.TCPPort, n.Handler, n.snowFlakeID, n.dispatcher)
+		if n.tcpServer == nil {
+			logger.Fatal("NewNode|NewServerTCP失败。", n.options.TCPPort, n.dispatcher)
+		}
 		n.tcpServer.OnNewSessionTCP = n.addSessionTCP
 		n.tcpServer.OnCloseSessionTCP = n.removeSessionTCP
 	}
@@ -81,6 +85,10 @@ func (n *Node) Run() {
 	n.Logger.Info("Run|启动……")
 	if n.tcpServer != nil {
 		n.sequence.WG[0].Wrap(n.tcpServer.Run)
+		go func() {
+			<-n.sequence.Ctx[0].Done()
+			n.tcpServer.Close()
+		}()
 	}
 	go func() {
 		n.Logger.Info("Run|HTTP监听端口", n.options.HTTPPort)

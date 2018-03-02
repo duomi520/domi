@@ -32,9 +32,7 @@ func Test_zone(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	ff := transport.NewFrameSlice(48, []byte("node"), nil)
 	for i := 0; i < 3; i++ {
-		if err := c.SendToQueue(ff); err != nil {
-			t.Error(err)
-		}
+		c.Send(ff)
 	}
 	//
 	time.Sleep(150 * time.Millisecond)
@@ -80,27 +78,18 @@ func Test_Group(t *testing.T) {
 	go c.Run()
 	time.Sleep(100 * time.Millisecond)
 	//加入
-	err = c.SendToQueue(transport.NewFrameSlice(57, util.Int64ToBytes(c.Csession.ID), users[0]))
-	err = c.SendToQueue(transport.NewFrameSlice(57, util.Int64ToBytes(c.Csession.ID), users[1]))
-	err = c.SendToQueue(transport.NewFrameSlice(57, util.Int64ToBytes(c.Csession.ID), users[2]))
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Send(transport.NewFrameSlice(57, util.Int64ToBytes(c.Csession.ID), users[0]))
+	c.Send(transport.NewFrameSlice(57, util.Int64ToBytes(c.Csession.ID), users[1]))
+	c.Send(transport.NewFrameSlice(57, util.Int64ToBytes(c.Csession.ID), users[2]))
 	//广播
-	err = c.SendToQueue(transport.NewFrameSlice(58, []byte("58c0"), users[0]))
-	err = c.SendToQueue(transport.NewFrameSlice(58, []byte("58c1"), users[1]))
-	err = c.SendToQueue(transport.NewFrameSlice(58, []byte("58c2"), users[2]))
-	if err != nil {
-		t.Error(err)
-	}
+	c.Send(transport.NewFrameSlice(58, []byte("58c0"), users[0]))
+	c.Send(transport.NewFrameSlice(58, []byte("58c1"), users[1]))
+	c.Send(transport.NewFrameSlice(58, []byte("58c2"), users[2]))
 	//离开
 	time.Sleep(100 * time.Millisecond)
-	err = c.SendToQueue(transport.NewFrameSlice(59, util.Int64ToBytes(c.Csession.ID), users[2]))
-	err = c.SendToQueue(transport.NewFrameSlice(59, util.Int64ToBytes(c.Csession.ID), users[1]))
-	err = c.SendToQueue(transport.NewFrameSlice(59, util.Int64ToBytes(c.Csession.ID), users[0]))
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Send(transport.NewFrameSlice(59, util.Int64ToBytes(c.Csession.ID), users[2]))
+	c.Send(transport.NewFrameSlice(59, util.Int64ToBytes(c.Csession.ID), users[1]))
+	c.Send(transport.NewFrameSlice(59, util.Int64ToBytes(c.Csession.ID), users[0]))
 	//
 	time.Sleep(150 * time.Millisecond)
 	ctxExitFunc()
