@@ -26,7 +26,7 @@ var (
 
 //IDWorker 工作组用于分配工作机器id
 type IDWorker struct {
-	SystemCenterStartupTime int64 //2015-12-31 00:00:00 +0800 CST  ，时间戳启动计算时间零点
+	SystemCenterStartupTime int64 //2018-6-1 00:00:00 UTC  ，时间戳启动计算时间零点
 	queue                   []int
 	queueMap                []int
 	consumption             int //消费
@@ -155,4 +155,9 @@ func timeGen() int64 {
 func GetWorkID(id int64) int64 {
 	temp := id >> WorkLeftShift
 	return temp & 1023 //1111111111   10bit
+}
+
+//GetWorkID 取得工作机器id
+func (s *SnowFlakeID) GetWorkID() int64 {
+	return s.workID >> WorkLeftShift
 }

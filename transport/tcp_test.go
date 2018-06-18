@@ -4,49 +4,46 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/duomi520/domi/util"
 	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/duomi520/domi/util"
 )
 
 var testPingFuncNum int32
 var testPongFuncNum int32
 
 func Test_tcpServer(t *testing.T) {
-	ctx := context.TODO()
+	ctx, ctxExitFunc := context.WithCancel(context.Background())
 	h := NewHandler()
 	sfID := util.NewSnowFlakeID(1, time.Now().UnixNano())
-	dispatcher := util.NewDispatcher(ctx, "TCP", 256)
-	go dispatcher.Run()
-	s := NewServerTCP(ctx, ":4568", h, sfID, dispatcher)
+	s := NewServerTCP(ctx, ":4568", h, sfID)
 	go s.Run()
-	c, err := NewClientTCP(ctx, "127.0.0.1:4568", h)
+	c, err := NewClientTCP(context.TODO(), "127.0.0.1:4568", h)
 	if err != nil {
 		t.Error(err)
 	}
 	go c.Run()
 	time.Sleep(150 * time.Millisecond)
-	c.Close()
+	ctxExitFunc()
 	time.Sleep(150 * time.Millisecond)
-	s.Close()
+	c.Close()
 	time.Sleep(150 * time.Millisecond)
 }
 
 func Test_tcpServerPingPong(t *testing.T) {
 	loop1 := 5000
 	loop2 := loop1 * 2
-	ctx := context.TODO()
+	ctx, ctxExitFunc := context.WithCancel(context.Background())
 	h := NewHandler()
 	sfID := util.NewSnowFlakeID(1, time.Now().UnixNano())
-	dispatcher := util.NewDispatcher(ctx, "TCP", 256)
-	go dispatcher.Run()
-	s := NewServerTCP(ctx, ":4569", h, sfID, dispatcher)
+	s := NewServerTCP(ctx, ":4569", h, sfID)
 	go s.Run()
 	h.HandleFunc(55, testPingFunc55)
 	h.HandleFunc(56, testPingFunc56)
-	c, err := NewClientTCP(ctx, "127.0.0.1:4569", h)
+	c, err := NewClientTCP(context.TODO(), "127.0.0.1:4569", h)
 	h.HandleFunc(FrameTypePong, testPongFunc)
 	if err != nil {
 		t.Error(err)
@@ -68,7 +65,7 @@ func Test_tcpServerPingPong(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	c.Close()
 	time.Sleep(150 * time.Millisecond)
-	s.Close()
+	ctxExitFunc()
 	time.Sleep(150 * time.Millisecond)
 	t.Log("数值：", atomic.LoadInt32(&testPingFuncNum), atomic.LoadInt32(&testPongFuncNum))
 	if testPingFuncNum != testPongFuncNum {

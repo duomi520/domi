@@ -1,15 +1,13 @@
 package util
 
 import (
-	"context"
 	"fmt"
 	"testing"
 	"time"
 )
 
 func Test_Dispatcher(t *testing.T) {
-	ctx, ctxExitFunc := context.WithCancel(context.Background())
-	d := NewDispatcher(ctx, "d1", 10)
+	d := NewDispatcher("d1", 10)
 	go d.Run()
 	for i := 0; i < 10; i++ {
 		var td testDoJob1
@@ -17,7 +15,7 @@ func Test_Dispatcher(t *testing.T) {
 		d.PutJob(td)
 	}
 	time.Sleep(150 * time.Millisecond)
-	ctxExitFunc()
+	d.Close()
 	time.Sleep(150 * time.Millisecond)
 }
 
@@ -30,8 +28,7 @@ func (td testDoJob1) WorkFunc() {
 }
 
 func Test_Dispatcher_Check(t *testing.T) {
-	ctx, ctxExitFunc := context.WithCancel(context.Background())
-	d := NewDispatcher(ctx, "d2", 30)
+	d := NewDispatcher("d2", 30)
 	d.DispatcherCheckDuration = 200 * time.Millisecond
 	go d.Run()
 	var td testDoJob2
@@ -39,7 +36,7 @@ func Test_Dispatcher_Check(t *testing.T) {
 		d.PutJob(td)
 	}
 	time.Sleep(500 * time.Millisecond)
-	ctxExitFunc()
+	d.Close()
 	time.Sleep(150 * time.Millisecond)
 }
 

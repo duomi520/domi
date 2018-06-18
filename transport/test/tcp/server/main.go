@@ -10,20 +10,18 @@ import (
 )
 
 func main() {
-	m := util.NewMicroService()
+	a := util.NewApplication()
 	h := transport.NewHandler()
 	sfID := util.NewSnowFlakeID(1, time.Now().UnixNano())
-	dispatcher := util.NewDispatcher(m.Ctx, "TCP", 256)
-	go dispatcher.Run()
-	s := transport.NewServerTCP(m.Ctx, ":4567", h, sfID, dispatcher)
+	s := transport.NewServerTCP(a.Ctx, ":4567", h, sfID)
 	h.HandleFunc(transport.FrameTypePing, ping)
 	if s == nil {
 		fmt.Println("启动tcp服务失败。")
 		os.Exit(1)
 	}
 	s.Logger.SetLevel(util.InfoLevel)
-	m.RunAssembly(s)
-	m.Run()
+	a.RunAssembly(s)
+	a.Run()
 }
 func ping(s transport.Session) {
 	if err := s.WriteFrameDataToCache(transport.FramePong); err != nil {

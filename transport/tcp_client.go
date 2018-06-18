@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,8 +36,7 @@ type ClientTCP struct {
 
 //NewClientTCP 新建
 func NewClientTCP(ctx context.Context, url string, h *Handler) (*ClientTCP, error) {
-	logger, _ := util.NewLogger(util.DebugLevel, "")
-	logger.SetLevel(util.DebugLevel)
+	logger, _ := util.NewLogger(util.ErrorLevel, "")
 	if h == nil {
 		return nil, errors.New("NewClientTCP|Handler不为nil。")
 	}
@@ -75,13 +73,7 @@ func NewClientTCP(ctx context.Context, url string, h *Handler) (*ClientTCP, erro
 		c.releaseByError()
 		return nil, errors.New("NewClientTCP|读取client.ID超时:" + err.Error())
 	}
-	var id int64
-	if id, err = c.Csession.readInt64(); err != nil {
-		c.releaseByError()
-		return nil, errors.New("NewClientTCP|读取client.ID失败:" + err.Error())
-	}
-	c.Csession.ID = id
-	c.Logger.SetMark("ClientTCP." + strconv.Itoa(int(id)))
+	c.Logger.SetMark("ClientTCP")
 	return c, nil
 }
 
@@ -103,14 +95,14 @@ func (c *ClientTCP) releaseByError() {
 
 //Run 运行
 func (c *ClientTCP) Run() {
-	c.Logger.Info("Run|连接到服务器")
+	c.Logger.Debug("Run|连接到服务器:", c.URL)
 	c.Wrap(c.sendLoop)
 	c.Wrap(c.receiveLoop)
 	c.Wait()
 	if c.OnCloseSessionTCP != nil {
 		c.OnCloseSessionTCP(c.Csession)
 	}
-	c.Logger.Info("Run|ClientTCP关闭。")
+	c.Logger.Debug("Run|ClientTCP关闭。")
 	c.Csession.Release()
 }
 
@@ -201,21 +193,17 @@ func (c *ClientTCP) receiveLoop() {
 			break
 		}
 		ft := c.Csession.getFrameType()
-		for ft > FrameTypeNil {
-			l := int(util.BytesToUint32(c.Csession.rBuf[c.Csession.r : c.Csession.r+4]))
-			if ft > FrameTypeExit {
-				if err = c.handler.Route(c.Csession); err != nil {
-					if err != nil && err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
-						c.Logger.Error("receiveLoop|Route错误：", err.Error())
-					}
-					break
-				}
-			} else {
-				if ft == FrameTypeExit {
-					return
-				}
+		for ft != FrameTypeNil {
+			if ft == FrameTypeExit {
+				return
 			}
-			c.Csession.r += l
+			if err = c.handler.Route(c.Csession); err != nil {
+				if err != nil && err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
+					c.Logger.Error("receiveLoop|Route错误：", err.Error())
+				}
+				break
+			}
+			c.Csession.r += int(util.BytesToUint32(c.Csession.rBuf[c.Csession.r : c.Csession.r+4]))
 			ft = c.Csession.getFrameType()
 		}
 	}

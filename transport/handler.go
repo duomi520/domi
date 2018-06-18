@@ -16,38 +16,28 @@ const DefaultDeadlineDuration time.Duration = time.Second * 10
 
 //Handler 帧处理器函数handler
 type Handler struct {
-	recvWorker map[uint16]func(Session)
-	Next       func(Session) error
+	frameWorker [65536]interface{}
 }
 
 //NewHandler 新建
 func NewHandler() *Handler {
 	h := &Handler{}
-	h.recvWorker = make(map[uint16]func(Session))
 	return h
 }
 
-//HandleFunc 添加处理器 线程不安全，需在初始化时设置完毕，服务启动后不能再添加。
+//HandleFunc 添加处理器 线程不安全。
 //处理函数避免阻塞。
 func (h *Handler) HandleFunc(u16 uint16, f func(Session)) {
-	h.recvWorker[u16] = f
+	h.frameWorker[u16] = f
 }
 
 //Route 帧处理器函数路由
 func (h *Handler) Route(s Session) error {
-	fs := s.GetFrameSlice()
-	if v, ok := h.recvWorker[fs.GetFrameType()]; ok {
-		if v != nil {
-			v(s)
-		} else {
-			return errors.New("Route|处理器函数为nil。")
-		}
+	ft := s.GetFrameSlice().GetFrameType()
+	if h.frameWorker[ft] != nil {
+		h.frameWorker[ft].(func(Session))(s)
 	} else {
-		if h.Next != nil {
-			err := h.Next(s)
-			return err
-		}
-		return errors.New("Route|" + string(fs.GetFrameType()) + "无相应的frameType处理器函数")
+		return errors.New("Route|处理器函数为nil。")
 	}
 	return nil
 }

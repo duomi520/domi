@@ -18,7 +18,7 @@ const FrameHeadLength int = 8
 
 //定义frameType
 const (
-	FrameTypeNil uint16 = iota
+	FrameTypeNil uint16 = 65500 + iota
 	FrameTypeHeartbeat
 	FrameTypeExit
 	FrameTypePing
@@ -26,10 +26,10 @@ const (
 	FrameTypeOverflow
 	FrameType6
 	FrameType7
-	FrameTypeGateToNextZoneFunc
-	FrameTypeGateToUserFunc
-	FrameTypeUserLeave
-	FrameType11
+	FrameTypeNodeName
+	FrameTypeReply
+	FrameTypeJoinChannel
+	FrameTypeLeaveChannel
 	FrameType12
 	FrameType13
 	FrameType14
@@ -48,7 +48,7 @@ var (
 
 //初始化
 func init() {
-	buf := [48]byte{8, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 1, 0, 8, 0, 0, 0, 0, 0, 2, 0, 12, 0, 0, 0, 0, 0, 3, 0, 112, 105, 110, 103, 12, 0, 0, 0, 0, 0, 4, 0, 112, 111, 110, 103}
+	buf := [48]byte{8, 0, 0, 0, 0, 0, 220, 255, 8, 0, 0, 0, 0, 0, 221, 255, 8, 0, 0, 0, 0, 0, 222, 255, 12, 0, 0, 0, 0, 0, 223, 255, 112, 105, 110, 103, 12, 0, 0, 0, 0, 0, 224, 255, 112, 111, 110, 103}
 	FrameNil = DecodeByBytes(buf[0:8])
 	FrameHeartbeat = DecodeByBytes(buf[8:16])
 	FrameExit = DecodeByBytes(buf[16:24])

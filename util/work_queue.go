@@ -1,7 +1,6 @@
 package util
 
 import (
-	"context"
 	"errors"
 	"runtime"
 	"sync"
@@ -10,9 +9,6 @@ import (
 
 //MaxQueue 队列最大缓存数
 const MaxQueue = 2048
-
-//ErrDispatcherClose 调度者已关闭
-var ErrDispatcherClose = errors.New("util.PutJob|调度者已关闭。")
 
 //Job 任务
 type Job interface {
@@ -48,7 +44,6 @@ func (w *Worker) run() {
 
 //Dispatcher 调度者,控制io发送
 type Dispatcher struct {
-	Ctx  context.Context
 	Name string
 
 	JobQueue    chan Job      //任务队列
@@ -63,11 +58,10 @@ type Dispatcher struct {
 }
 
 //NewDispatcher 新建
-func NewDispatcher(ctx context.Context, name string, maxCount int) *Dispatcher {
-	logger, _ := NewLogger(DebugLevel, "")
+func NewDispatcher(name string, maxCount int) *Dispatcher {
+	logger, _ := NewLogger(ErrorLevel, "")
 	logger.SetMark("Dispatcher." + name)
 	d := &Dispatcher{
-		Ctx:  ctx,
 		Name: name,
 
 		JobQueue:    make(chan Job, MaxQueue),
@@ -86,7 +80,7 @@ func NewDispatcher(ctx context.Context, name string, maxCount int) *Dispatcher {
 func (d *Dispatcher) PutJob(j Job) error {
 	select {
 	case <-d.stopChan:
-		return ErrDispatcherClose
+		return errors.New("util.PutJob|调度者已关闭。")
 	default:
 		d.JobQueue <- j
 		return nil
@@ -95,7 +89,7 @@ func (d *Dispatcher) PutJob(j Job) error {
 
 //Run 运行
 func (d *Dispatcher) Run() {
-	d.logger.Info("Run|调度守护启动……")
+	d.logger.Debug("Run|调度守护启动……")
 	check := time.NewTicker(d.DispatcherCheckDuration)
 	minimumWorker := runtime.NumCPU() + 8
 	//初始化空闲工作者池
@@ -139,10 +133,8 @@ func (d *Dispatcher) Run() {
 				}
 				workerPool = workerPool[:minimumWorker]
 			}
-		case <-d.Ctx.Done():
-			d.Close()
 		case <-d.stopChan:
-			d.logger.Info("Run|等待工作者关闭。")
+			d.logger.Debug("Run|等待工作者关闭……")
 			check.Stop()
 			for ix := range workerPool {
 				workerPool[ix] <- nil
@@ -152,7 +144,7 @@ func (d *Dispatcher) Run() {
 				j <- nil
 			}()
 			d.Wait()
-			d.logger.Info("Run|调度守护关闭。")
+			d.logger.Debug("Run|调度守护关闭。")
 			return
 		}
 	}

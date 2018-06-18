@@ -25,10 +25,11 @@ type RingBuffer struct {
 	ringBufferShift int64 //求余 设X对Y求余，Y等于2^N，公式为：X & (2^N - 1)
 	ringBufferSize  int64 //2^26 67108864 64M,2^27 134217728 128M,2^28 268435456 256M
 	ring            []byte
-	writeCursor     int64
 	pad1            [56]byte //pad*:凑够64字节CPU缓存行
-	availableCursor int64    //已提交位置
+	writeCursor     int64
 	pad2            [56]byte
+	availableCursor int64 //已提交位置
+
 }
 
 //getAvailableCursor 读取已提交位置
@@ -84,7 +85,7 @@ func (r *RingBuffer) getBytes(start, end int64) []byte {
 
 //EventHandler 消费者
 type EventHandler struct {
-	Ctx context.Context
+	ctx context.Context
 
 	Ring *RingBuffer
 
@@ -112,7 +113,7 @@ func NewEventHandler(ctx context.Context, task func(ProcessorJob), decode func([
 		logger.Fatal("NewEventHandler|缺少func。")
 	}
 	e := &EventHandler{
-		Ctx:        ctx,
+		ctx:        ctx,
 		Ring:       &RingBuffer{ringBufferShift: 67108864 - 1, ringBufferSize: 67108864, ring: make([]byte, 67108864)},
 		noticeChan: make(chan struct{}),
 
@@ -173,22 +174,20 @@ func (e *EventHandler) Run() {
 				w <- processorJobMap[key]
 				delete(processorJobMap, key)
 			}
-		case <-e.Ctx.Done():
-			goto end
+		case <-e.ctx.Done():
+			atomic.AddInt32(&e.Ring.stopFlag, 1)
+			e.logger.Info("Run|等待子协程关闭。")
+			for _, v := range e.processors {
+				close(v.eventChan)
+			}
+			e.Wait()
+			e.logger.Info("Run|关闭。")
+			close(e.processorQueue)
+			e.processors = nil
+			processorJobMap = nil
+			return
 		}
 	}
-end:
-	atomic.AddInt32(&e.Ring.stopFlag, 1)
-	e.logger.Info("Run|等待子协程关闭。")
-	for _, v := range e.processors {
-		close(v.eventChan)
-	}
-	e.Wait()
-	e.logger.Info("Run|关闭。")
-	close(e.processorQueue)
-	e.processors = nil
-	processorJobMap = nil
-	//	close(e.noticeChan)  // TODO 优雅释放
 }
 
 //

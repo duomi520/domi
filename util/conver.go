@@ -7,28 +7,6 @@ import (
 //DIGITS 数字串
 const DIGITS string = "0123456789"
 
-//UintToBytesTable 字典
-type UintToBytesTable struct {
-	c   [4]byte
-	B16 []byte
-	B32 []byte
-}
-
-//UintToBytesCache 字典
-var UintToBytesCache [10000]UintToBytesTable
-
-//初始化
-func init() {
-	for i := 0; i < len(UintToBytesCache); i++ {
-		UintToBytesCache[i].c[0] = byte(i)
-		UintToBytesCache[i].c[1] = byte(i >> 8)
-		UintToBytesCache[i].c[2] = byte(i >> 16)
-		UintToBytesCache[i].c[3] = byte(i >> 24)
-		UintToBytesCache[i].B16 = UintToBytesCache[i].c[0:2]
-		UintToBytesCache[i].B32 = UintToBytesCache[i].c[0:4]
-	}
-}
-
 //Uint32ToString Uint32转String
 func Uint32ToString(d uint32) string {
 	if d == 0 {
@@ -73,9 +51,6 @@ func BytesToString(b []byte) string {
 
 //Uint32ToBytes uint32转切片 little_endian
 func Uint32ToBytes(u uint32) []byte {
-	if u < 10000 {
-		return UintToBytesCache[u].B32
-	}
 	b := make([]byte, 4)
 	b[0] = byte(u)
 	b[1] = byte(u >> 8)
@@ -86,9 +61,6 @@ func Uint32ToBytes(u uint32) []byte {
 
 //Uint16ToBytes uint16转切片 little_endian
 func Uint16ToBytes(u uint16) []byte {
-	if u < 10000 {
-		return UintToBytesCache[u].B16
-	}
 	b := make([]byte, 2)
 	b[0] = byte(u)
 	b[1] = byte(u >> 8)

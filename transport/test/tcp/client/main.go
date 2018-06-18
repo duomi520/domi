@@ -3,11 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/duomi520/domi/transport"
-	"github.com/duomi520/domi/util"
 	"net"
 	"os"
 	"runtime"
+
+	"github.com/duomi520/domi/transport"
+	"github.com/duomi520/domi/util"
 	//	"runtime/pprof"
 	"sync"
 	"time"
@@ -27,6 +28,7 @@ func main() {
 	clientN(500)
 	clientN(1000)
 	clientN(2500)
+	clientN(4000)
 }
 func testN(num int) {
 	sessions := make([]*transport.SessionTCP, num)
@@ -81,11 +83,6 @@ func dial() *transport.SessionTCP {
 	b := util.Uint32ToBytes(transport.ProtocolMagicNumber)
 	if _, err = conn.Write(b); err != nil {
 		fmt.Println("ProtocolMagicNumber:", err)
-		conn.Close()
-		return nil
-	}
-	buf := make([]byte, 8)
-	if _, err = conn.Read(buf); err != nil {
 		conn.Close()
 		return nil
 	}

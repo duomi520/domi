@@ -2,19 +2,19 @@
 
 import (
 	"context"
-	"github.com/duomi520/domi/util"
 	"io"
 	"net"
 	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
-	"time"
+
+	"github.com/duomi520/domi/util"
 )
 
 //ServerTCP TCP服务
 type ServerTCP struct {
-	Ctx               context.Context
+	ctx               context.Context
 	sfID              *util.SnowFlakeID
 	dispatcher        *util.Dispatcher
 	tcpAddress        *net.TCPAddr
@@ -23,65 +23,57 @@ type ServerTCP struct {
 	handler           *Handler
 	OnNewSessionTCP   func(Session)
 	OnCloseSessionTCP func(Session)
-
-	closeOnce sync.Once
-	Logger    *util.Logger
+	Logger            *util.Logger
 	util.WaitGroupWrapper
 }
 
 //NewServerTCP 新建
-func NewServerTCP(ctx context.Context, post string, h *Handler, sfID *util.SnowFlakeID, d *util.Dispatcher) *ServerTCP {
-	logger, _ := util.NewLogger(util.DebugLevel, "")
+func NewServerTCP(ctx context.Context, post string, h *Handler, sfID *util.SnowFlakeID) *ServerTCP {
+	logger, _ := util.NewLogger(util.ErrorLevel, "")
 	logger.SetMark("ServerTCP")
 	if sfID == nil {
-		logger.Error("NewServerTCP|SnowFlakeID为nil")
+		logger.Fatal("NewServerTCP|SnowFlakeID为nil")
 		return nil
 	}
 	if h == nil {
-		logger.Error("NewServerTCP|Handler不为nil")
+		logger.Fatal("NewServerTCP|Handler不为nil")
 		return nil
 	}
-	if d == nil {
-		logger.Error("NewServerTCP|Dispatcher不为nil")
-		return nil
-	}
+
 	tcpAddress, err := net.ResolveTCPAddr("tcp4", post)
 	listener, err := net.ListenTCP("tcp", tcpAddress)
 	if err != nil {
 		logger.Fatal("NewTCPServer|监听端口失败:", err)
 	}
 	s := &ServerTCP{
-		Ctx:         ctx,
+		ctx:         ctx,
 		sfID:        sfID,
-		dispatcher:  d,
 		tcpAddress:  tcpAddress,
 		tcpListener: listener,
 		tcpPost:     post,
 		handler:     h,
 		Logger:      logger,
 	}
-	go func() {
-		<-s.Ctx.Done()
-		s.Close()
-	}()
+	s.dispatcher = util.NewDispatcher("TCPSend", 256)
 	return s
-}
-
-//Close 关闭监听
-func (s *ServerTCP) Close() {
-	s.closeOnce.Do(func() {
-		if err := s.tcpListener.Close(); err != nil {
-			s.Logger.Error("Close|监听关闭失败:", err)
-		} else {
-			s.Logger.Info("Close|监听关闭。")
-		}
-	})
 }
 
 //Run 运行
 func (s *ServerTCP) Run() {
-	s.Logger.Info("tcpServer|TCP监听端口", s.tcpPost)
-	s.Logger.Info("tcpServer|已初始化连接，等待客户端连接……")
+	go s.dispatcher.Run()
+	go func() {
+		var closeOnce sync.Once
+		<-s.ctx.Done()
+		closeOnce.Do(func() {
+			if err := s.tcpListener.Close(); err != nil {
+				s.Logger.Error("Close|TCP监听端口关闭失败:", err)
+			} else {
+				s.Logger.Debug("Close|TCP监听端口关闭。")
+			}
+		})
+	}()
+	s.Logger.Debug("tcpServer|TCP监听端口", s.tcpPost)
+	s.Logger.Debug("tcpServer|已初始化连接，等待客户端连接……")
 	for {
 		conn, err := s.tcpListener.AcceptTCP()
 		if err != nil {
@@ -103,12 +95,12 @@ func (s *ServerTCP) Run() {
 		if err = conn.SetNoDelay(false); err != nil {
 			s.Logger.Error("tcpServer|设定操作系统是否应该延迟数据包传递失败:" + err.Error())
 		}
-
 		go tcpReceive(s, id, conn)
 	}
-	s.Logger.Debug("tcpServer|等待子协程关闭。")
+	s.Logger.Debug("tcpServer|等待子协程关闭……")
 	s.Wait()
-	s.Logger.Info("tcpServer|关闭。")
+	s.dispatcher.Close()
+	s.Logger.Debug("tcpServer|关闭。")
 }
 
 //tcpReceive 接收
@@ -136,14 +128,6 @@ func tcpReceive(s *ServerTCP, id int64, conn *net.TCPConn) {
 	}
 	if !protocolMagic(pm) {
 		s.Logger.Warn("tcpReceive|警告: 无效的协议头。")
-		return
-	}
-	if err = session.Conn.SetWriteDeadline(time.Now().Add(DefaultDeadlineDuration)); err != nil {
-		s.Logger.Error("tcpReceive|写入ID超时:" + err.Error())
-		return
-	}
-	if _, err = session.Conn.Write(util.Int64ToBytes(session.ID)); err != nil {
-		s.Logger.Error("tcpReceive|写入ID失败:" + err.Error())
 		return
 	}
 	if s.OnNewSessionTCP != nil {
@@ -177,23 +161,17 @@ func (s *ServerTCP) ioLoop(session *SessionTCP) error {
 			return err
 		}
 		ft := session.getFrameType()
-		for ft > FrameTypeNil {
-			l := int(util.BytesToUint32(session.rBuf[session.r : session.r+4]))
-			if ft > FrameTypeExit {
+		for ft != FrameTypeNil {
+			if ft == FrameTypeExit {
+				return nil
+			}
+			if ft == FrameTypeHeartbeat {
+			} else {
 				if err := s.handler.Route(session); err != nil {
 					return err
 				}
-			} else {
-				if ft == FrameTypeExit {
-					return nil
-				}
-				if ft == FrameTypeHeartbeat {
-					if err := session.WriteFrameDataPromptly(FrameHeartbeat); err != nil {
-						return nil
-					}
-				}
 			}
-			session.r += l
+			session.r += int(util.BytesToUint32(session.rBuf[session.r : session.r+4]))
 			ft = session.getFrameType()
 		}
 	}

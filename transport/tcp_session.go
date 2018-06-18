@@ -59,11 +59,11 @@ func (s *SessionTCP) GetFrameSlice() *FrameSlice {
 //getFrameType 取得当前帧类型
 func (s *SessionTCP) getFrameType() uint16 {
 	if s.w < s.r+FrameHeadLength {
-		return 0
+		return FrameTypeNil
 	}
 	length := int(util.BytesToUint32(s.rBuf[s.r : s.r+4]))
 	if s.r+length > s.w {
-		return 0
+		return FrameTypeNil
 	}
 	return util.BytesToUint16(s.rBuf[s.r+6 : s.r+8])
 }
@@ -123,7 +123,7 @@ func (s *SessionTCP) WriteFrameDataToCache(f *FrameSlice) error {
 	if end >= int32(util.BytesPoolLenght) {
 		//申请的地址超出边界
 		if start >= int32(util.BytesPoolLenght) {
-			time.Sleep(time.Millisecond)
+			time.Sleep(time.Millisecond) //自旋等待
 			return s.WriteFrameDataToCache(f)
 		}
 		//刚好越界触发
@@ -163,19 +163,6 @@ func (s *SessionTCP) readUint32() (uint32, error) {
 		return 0, err
 	}
 	i := uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
-	return i, nil
-}
-
-//readInt64 读Int64
-func (s *SessionTCP) readInt64() (int64, error) {
-	b := make([]byte, 8)
-	if err := s.Conn.SetWriteDeadline(time.Now().Add(DefaultDeadlineDuration)); err != nil {
-		return 0, err
-	}
-	if _, err := s.Conn.Read(b); err != nil {
-		return 0, err
-	}
-	i := int64(b[0]) | int64(b[1])<<8 | int64(b[2])<<16 | int64(b[3])<<24 | int64(b[4])<<32 | int64(b[5])<<40 | int64(b[6])<<48 | int64(b[7])<<56
 	return i, nil
 }
 
