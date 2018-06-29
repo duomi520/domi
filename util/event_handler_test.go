@@ -75,8 +75,8 @@ func testDecode(b []byte) (int64, []byte) {
 	newLength := length - 8
 	buf := b[:newLength]
 	id := BytesToInt64(b[newLength:])
-	copy(buf[:4], Int64ToBytes(int64(newLength)))
+	CopyInt64(buf[:4], int64(newLength))
 	u16 := BytesToUint16(buf[4:6])
-	copy(buf[4:6], Uint16ToBytes(u16-8))
+	CopyUint16(buf[4:6], u16-8)
 	return id, buf
 }

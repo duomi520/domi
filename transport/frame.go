@@ -30,7 +30,7 @@ const (
 	FrameTypeReply
 	FrameTypeJoinChannel
 	FrameTypeLeaveChannel
-	FrameType12
+	FrameTypeBusGetChannels
 	FrameType13
 	FrameType14
 	FrameType15
@@ -55,8 +55,8 @@ func init() {
 	FramePing = DecodeByBytes(buf[24:36])
 	FramePong = DecodeByBytes(buf[36:48])
 	overflow := make([]byte, util.BytesPoolLenght+8)
-	copy(overflow[0:4], util.Uint32ToBytes(uint32(util.BytesPoolLenght+8)))
-	copy(overflow[6:8], util.Uint16ToBytes(FrameTypeOverflow))
+	util.CopyUint32(overflow[0:4], uint32(util.BytesPoolLenght+8))
+	util.CopyUint16(overflow[6:8], FrameTypeOverflow)
 	FrameOverflow = DecodeByBytes(overflow)
 }
 
@@ -70,9 +70,9 @@ type FrameSlice struct {
 //NewFrameSlice 新建 拷贝到新的切片
 func NewFrameSlice(ft uint16, d, e []byte) *FrameSlice {
 	tmp := make([]byte, 8, FrameHeadLength+len(d)+len(e))
-	copy(tmp[0:4], util.Uint32ToBytes(uint32(FrameHeadLength+len(d)+len(e))))
-	copy(tmp[4:6], util.Uint16ToBytes(uint16(len(e))))
-	copy(tmp[6:8], util.Uint16ToBytes(ft))
+	util.CopyUint32(tmp[0:4], uint32(FrameHeadLength+len(d)+len(e)))
+	util.CopyUint16(tmp[4:6], uint16(len(e)))
+	util.CopyUint16(tmp[6:8], ft)
 	tmp = append(tmp, d...)
 	f := &FrameSlice{
 		data:   tmp,
@@ -104,7 +104,7 @@ func (f *FrameSlice) EncodedTOBytes() []byte {
 func (f *FrameSlice) GetFrameType() uint16 { return util.BytesToUint16(f.data[6:8]) }
 
 //SetFrameType 设置类型
-func (f *FrameSlice) SetFrameType(ft uint16) { copy(f.data[6:8], util.Uint16ToBytes(ft)) }
+func (f *FrameSlice) SetFrameType(ft uint16) { util.CopyUint16(f.data[6:8], ft) }
 
 //SetFrameTypeByBytes 设置类型
 func (f *FrameSlice) SetFrameTypeByBytes(b []byte) {
@@ -141,8 +141,8 @@ func (f *FrameSlice) Release() {
 //SetExtend 设置扩展
 func (f *FrameSlice) SetExtend(ex []byte) *FrameSlice {
 	if len(ex) <= int(util.BytesToUint16(f.base[4:6])) {
-		copy(f.base[0:4], util.Uint32ToBytes(uint32(len(f.data)+len(ex))))
-		copy(f.base[4:6], util.Uint16ToBytes(uint16(len(ex))))
+		util.CopyUint32(f.base[0:4], uint32(len(f.data)+len(ex)))
+		util.CopyUint16(f.base[4:6], uint16(len(ex)))
 		f.base = append(f.base[:len(f.data)], ex...)
 		f.extend = f.base[len(f.data):]
 		return f
@@ -151,7 +151,7 @@ func (f *FrameSlice) SetExtend(ex []byte) *FrameSlice {
 	base := make([]byte, length)
 	copy(base, f.base[:len(f.base)-len(f.extend)])
 	copy(base[length-len(ex):], ex)
-	copy(base[0:4], util.Uint32ToBytes(uint32(len(f.data)+len(ex))))
-	copy(base[4:6], util.Uint16ToBytes(uint16(len(ex))))
+	util.CopyUint32(base[0:4], uint32(len(f.data)+len(ex)))
+	util.CopyUint16(base[4:6], uint16(len(ex)))
 	return DecodeByBytes(base)
 }

@@ -76,15 +76,14 @@ func dial() *transport.SessionTCP {
 	conn, err := net.DialTCP("tcp", nil, tcpAddr)
 	if err != nil {
 		fmt.Println("连接服务端失败:", err.Error())
-		conn.Close()
-		return nil
+		os.Exit(1)
 	}
 	session := transport.NewSessionTCP(conn)
-	b := util.Uint32ToBytes(transport.ProtocolMagicNumber)
+	b := make([]byte, 4)
+	util.CopyUint32(b, transport.ProtocolMagicNumber)
 	if _, err = conn.Write(b); err != nil {
 		fmt.Println("ProtocolMagicNumber:", err)
-		conn.Close()
-		return nil
+		os.Exit(1)
 	}
 	return session
 }
@@ -131,7 +130,8 @@ func clientN(num int) {
 	cs = nil
 }
 
-func pongFunc(s transport.Session) {
+func pongFunc(s transport.Session) error {
 	//	fmt.Println(string(s.GetFrame().GetData()))
 	clientNwg.Done()
+	return nil
 }

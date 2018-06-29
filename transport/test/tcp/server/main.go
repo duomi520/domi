@@ -23,10 +23,11 @@ func main() {
 	a.RunAssembly(s)
 	a.Run()
 }
-func ping(s transport.Session) {
+func ping(s transport.Session) error {
 	if err := s.WriteFrameDataToCache(transport.FramePong); err != nil {
 		fmt.Println("ping:", err.Error())
 	}
+	return nil
 	//	if err := s.WriteFrameDataPromptly(transport.FramePong); err != nil {
 	//		fmt.Println("ping:", err.Error())
 	//	}

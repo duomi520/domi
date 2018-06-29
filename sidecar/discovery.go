@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/coreos/etcd/clientv3"
 	"github.com/coreos/etcd/clientv3/concurrency"
+	"github.com/duomi520/domi/transport"
 	"github.com/duomi520/domi/util"
 )
 
@@ -19,6 +21,15 @@ const SystemCenterStartupTime int64 = 1527811200000000000 //2018-6-1 00:00:00 UT
 
 //systemServerLock 服务ID分配锁
 const systemServerLock string = "systemServerLock"
+
+//定义服务状态
+const (
+	ServiceStateNil int64 = iota
+	ServiceStateDie
+	ServiceStateRun
+	ServiceStatePause
+	ServiceStateStop
+)
 
 //AddressInfo 地址信息
 type AddressInfo struct {
@@ -31,9 +42,18 @@ type AddressInfo struct {
 
 //Peer 子
 type Peer struct {
-	client      *clientv3.Client
-	leaseID     clientv3.LeaseID
-	SnowFlakeID *util.SnowFlakeID
+	ServiceState int64 //服务状态
+
+	Client  *clientv3.Client
+	leaseID clientv3.LeaseID
+
+	SnowFlakeID   *util.SnowFlakeID
+	NodeWatchChan clientv3.WatchChan
+
+	AddressInfoMap map[string]AddressInfo          //key:版本/服务名/机器id
+	NodeMap        *sync.Map                       //key:版本/服务名/机器id or 机器id  value:  session
+	ClientMap      map[string]*transport.ClientTCP //key:url  value:  ClientTCP
+
 	AddressInfo
 	Endpoints []string
 }
@@ -41,7 +61,12 @@ type Peer struct {
 //newPeer 新增
 func newPeer(name, HTTPPort, TCPPort string, endpoints []string) (*Peer, error) {
 	var err error
-	p := &Peer{}
+	p := &Peer{
+		ServiceState:   ServiceStateNil,
+		AddressInfoMap: make(map[string]AddressInfo),
+		NodeMap:        &sync.Map{},
+		ClientMap:      make(map[string]*transport.ClientTCP, 1024),
+	}
 	p.Name = name
 	p.HTTPPort = HTTPPort
 	p.TCPPort = TCPPort
@@ -55,16 +80,15 @@ func newPeer(name, HTTPPort, TCPPort string, endpoints []string) (*Peer, error) 
 		return nil, err
 	}
 	p.SnowFlakeID = util.NewSnowFlakeID(id, SystemCenterStartupTime)
-
 	return p, nil
 }
 
 //releasePeer 释放
 func (p *Peer) releasePeer() error {
-	if _, err := p.client.Revoke(context.TODO(), p.leaseID); err != nil {
+	if _, err := p.Client.Revoke(context.TODO(), p.leaseID); err != nil {
 		return err
 	}
-	p.client.Close()
+	p.Client.Close()
 	return nil
 }
 
@@ -119,7 +143,7 @@ func (p *Peer) registerServer(endpoints []string) (int64, error) {
 	if err != nil {
 		return 0, errors.New("registerServer|保持健康检查失败: " + err.Error())
 	}
-	p.client = client
+	p.Client = client
 	p.leaseID = resp.ID
 	bSuccess = true
 	return int64(id), nil
@@ -165,7 +189,7 @@ func (p *Peer) getMachineID(cli *clientv3.Client) (int, error) {
 //getAllMachineAddress 取得所有机器地址
 func (p *Peer) getAllMachineAddress() ([]string, error) {
 	//分布式锁
-	s, err := concurrency.NewSession(p.client)
+	s, err := concurrency.NewSession(p.Client)
 	if err != nil {
 		return nil, errors.New("getAllMachineAddress|分布式锁失败: " + err.Error())
 	}
@@ -178,7 +202,7 @@ func (p *Peer) getAllMachineAddress() ([]string, error) {
 	//设置3秒超时
 	ctx, cancel := context.WithTimeout(context.TODO(), 3*time.Second)
 	defer cancel()
-	resp, err := p.client.Get(ctx, "machine/", clientv3.WithPrefix())
+	resp, err := p.Client.Get(ctx, "machine/", clientv3.WithPrefix())
 	if err != nil {
 		return nil, err
 	}
@@ -189,6 +213,32 @@ func (p *Peer) getAllMachineAddress() ([]string, error) {
 			return nil, errors.New("getAllMachineAddress|json解码错误：" + err.Error())
 		}
 		addr = append(addr, info.URL)
+		p.AddressInfoMap[info.FullName] = *info
 	}
+	//监视
+	p.NodeWatchChan = p.Client.Watch(context.TODO(), "machine/", clientv3.WithPrefix())
 	return addr, nil
+}
+
+//getSession 取得会话 TODO
+func (p *Peer) getSession(target interface{}) (transport.Session, error) {
+	v, ok := p.NodeMap.Load(target)
+	if !ok {
+		return nil, errors.New("getSession|NodeMap找不到:" + fmt.Sprintf("%d", target.(int64)))
+	}
+	return v.(transport.Session), nil
+}
+
+//removeNode 移除节点
+func (p *Peer) removeNode(info AddressInfo, value []byte) {
+	p.NodeMap.Delete(info.FullName)
+	p.NodeMap.Delete(getNodeID(info.FullName))
+	delete(p.ClientMap, info.URL)
+	delete(p.AddressInfoMap, string(value))
+}
+
+//addNode 加入节点
+func (p *Peer) addNode(info AddressInfo, cli *transport.ClientTCP) {
+	p.ClientMap[info.URL] = cli
+	p.AddressInfoMap[p.FullName] = info
 }

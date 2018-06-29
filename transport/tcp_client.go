@@ -24,8 +24,7 @@ type ClientTCP struct {
 
 	SendChan chan *FrameSlice
 
-	handler           *Handler
-	OnCloseSessionTCP func(Session)
+	handler *Handler
 
 	stopChan  chan struct{} //退出信号
 	closeOnce sync.Once
@@ -36,10 +35,13 @@ type ClientTCP struct {
 
 //NewClientTCP 新建
 func NewClientTCP(ctx context.Context, url string, h *Handler) (*ClientTCP, error) {
-	logger, _ := util.NewLogger(util.ErrorLevel, "")
+	logger, _ := util.NewLogger(util.DebugLevel, "")
 	if h == nil {
 		return nil, errors.New("NewClientTCP|Handler不为nil。")
 	}
+	h.HandleFunc(FrameTypeHeartbeat, func(s Session) error {
+		return nil
+	})
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", url)
 	if err != nil {
 		return nil, errors.New("NewClientTCP|tcpAddr失败:" + err.Error())
@@ -65,13 +67,11 @@ func NewClientTCP(ctx context.Context, url string, h *Handler) (*ClientTCP, erro
 		c.releaseByError()
 		return nil, errors.New("NewClientTCP|写入ProtocolMagicNumber超时:" + err.Error())
 	}
-	if _, err := conn.Write(util.Uint32ToBytes(ProtocolMagicNumber)); err != nil {
+	pmn := make([]byte, 4)
+	util.CopyUint32(pmn, ProtocolMagicNumber)
+	if _, err := conn.Write(pmn); err != nil {
 		c.releaseByError()
 		return nil, errors.New("NewClientTCP|写入ProtocolMagicNumber失败:" + err.Error())
-	}
-	if err := conn.SetWriteDeadline(time.Now().Add(DefaultDeadlineDuration)); err != nil {
-		c.releaseByError()
-		return nil, errors.New("NewClientTCP|读取client.ID超时:" + err.Error())
 	}
 	c.Logger.SetMark("ClientTCP")
 	return c, nil
@@ -99,9 +99,6 @@ func (c *ClientTCP) Run() {
 	c.Wrap(c.sendLoop)
 	c.Wrap(c.receiveLoop)
 	c.Wait()
-	if c.OnCloseSessionTCP != nil {
-		c.OnCloseSessionTCP(c.Csession)
-	}
 	c.Logger.Debug("Run|ClientTCP关闭。")
 	c.Csession.Release()
 }
@@ -185,26 +182,26 @@ func (c *ClientTCP) receiveLoop() {
 		c.Close()
 	}()
 	for {
-		var err error
-		if err = c.Csession.ioRead(); err != nil {
-			if err != nil && err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
+	loop:
+		if err := c.Csession.ioRead(); err != nil {
+			if err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
 				c.Logger.Error("receiveLoop|ioRead错误：", err.Error())
 			}
-			break
+			return
 		}
-		ft := c.Csession.getFrameType()
-		for ft != FrameTypeNil {
-			if ft == FrameTypeExit {
+		for {
+			ft := c.Csession.getFrameType()
+			if err := c.handler.route(ft, c.Csession); err != nil {
+				if ft == FrameTypeNil {
+					goto loop
+				}
+				if ft == FrameTypeExit {
+					return
+				}
+				c.Logger.Error("receiveLoop|错误：", err.Error())
 				return
 			}
-			if err = c.handler.Route(c.Csession); err != nil {
-				if err != nil && err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
-					c.Logger.Error("receiveLoop|Route错误：", err.Error())
-				}
-				break
-			}
 			c.Csession.r += int(util.BytesToUint32(c.Csession.rBuf[c.Csession.r : c.Csession.r+4]))
-			ft = c.Csession.getFrameType()
 		}
 	}
 }

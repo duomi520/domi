@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -16,50 +14,45 @@ import (
 
 //Contact 通讯联络
 type Contact struct {
-	ctx         context.Context
-	ComputerMap *sync.Map                       //key:版本/服务名/机器id  value:  session
-	ClientMap   map[string]*transport.ClientTCP //key:url  value:  ClientTCP
-
+	ctx        context.Context
 	tcpServer  *transport.ServerTCP
 	httpServer *http.Server
+	closeOnce  sync.Once
 
-	closeOnce sync.Once
 	*transport.Handler
+	*Peer
 }
 
 //newContact 新建
-func newContact(ctx context.Context, p *Peer) (*Contact, error) {
+func newContact(ctx context.Context, name, HTTPPort, TCPPort string, endpoints []string) (*Contact, error) {
 	c := &Contact{
-		ctx:         ctx,
-		ComputerMap: &sync.Map{},
-		ClientMap:   make(map[string]*transport.ClientTCP, 1024),
-		Handler:     transport.NewHandler(),
+		ctx:     ctx,
+		Handler: transport.NewHandler(),
+	}
+	var err error
+	c.Peer, err = newPeer(name, HTTPPort, TCPPort, endpoints)
+	if err != nil {
+		return nil, errors.New("newContact|Peer失败：" + err.Error())
 	}
 	//tcp支持
-	c.tcpServer = transport.NewServerTCP(ctx, p.TCPPort, c.Handler, p.SnowFlakeID)
+	c.tcpServer = transport.NewServerTCP(ctx, TCPPort, c.Handler, c.SnowFlakeID)
 	if c.tcpServer == nil {
-		return nil, errors.New("NewContact|NewServerTCP失败:" + p.TCPPort)
+		return nil, errors.New("newContact|NewServerTCP失败:" + TCPPort)
 	}
 	c.HandleFunc(transport.FrameTypeNodeName, c.addSessionTCP)
 
 	//http支持
 	c.httpServer = &http.Server{
-		Addr:           p.HTTPPort,
+		Addr:           HTTPPort,
 		Handler:        http.DefaultServeMux,
 		ReadTimeout:    10 * time.Second,
 		WriteTimeout:   10 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
-	pre := fmt.Sprintf("/%d", p.leaseID)
+	pre := fmt.Sprintf("/%d", c.leaseID)
 	http.HandleFunc(pre+"/ping", c.echo)
 	http.HandleFunc(pre+"/exit", c.exit)
 	return c, nil
-}
-
-//releaseContact 释放
-func (c *Contact) releaseContact() {
-	c.ComputerMap = nil
-	c.ClientMap = nil
 }
 
 //echo Ping 回复 pong
@@ -78,18 +71,9 @@ func (c *Contact) exit(w http.ResponseWriter, r *http.Request) {
 }
 
 //addSessionTCP 用户连接时
-func (c *Contact) addSessionTCP(s transport.Session) {
+func (c *Contact) addSessionTCP(s transport.Session) error {
 	ft := s.GetFrameSlice()
-	c.ComputerMap.Store(string(ft.GetData()), s)
-	c.ComputerMap.Store(getNodeID(string(ft.GetData())), s)
-}
-
-//getNodeID
-func getNodeID(s string) int64 {
-	i := strings.LastIndex(s, "/")
-	d, err := strconv.Atoi(s[i+1:])
-	if err != nil {
-		return 0
-	}
-	return int64(d)
+	c.NodeMap.Store(string(ft.GetData()), s)
+	c.NodeMap.Store(getNodeID(string(ft.GetData())), s)
+	return nil
 }

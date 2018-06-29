@@ -20,18 +20,6 @@ func converTest2() {
 	_ = BytesToString(b)
 }
 
-//Test_AppendInt64
-func Test_AppendInt64(t *testing.T) {
-	b := make([]byte, 0)
-	b = AppendInt64(b, 8888)
-	t.Log(b)
-	l := BytesToInt64(b)
-	t.Log(l)
-	if l != 8888 {
-		t.Error("不相等。")
-	}
-}
-
 //Benchmark_Test1
 func Benchmark_Test1(b *testing.B) {
 	for i := 0; i < b.N; i++ {

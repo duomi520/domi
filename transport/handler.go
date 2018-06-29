@@ -2,6 +2,7 @@ package transport
 
 import (
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -19,27 +20,33 @@ type Handler struct {
 	frameWorker [65536]interface{}
 }
 
+var errFrameTypeNil = errors.New("读完缓存。")
+var errFrameTypeExit = errors.New("收到退出信息。")
+
 //NewHandler 新建
 func NewHandler() *Handler {
 	h := &Handler{}
+	h.HandleFunc(FrameTypeNil, func(Session) error {
+		return errFrameTypeNil
+	})
+	h.HandleFunc(FrameTypeExit, func(Session) error {
+		return errFrameTypeExit
+	})
 	return h
 }
 
 //HandleFunc 添加处理器 线程不安全。
 //处理函数避免阻塞。
-func (h *Handler) HandleFunc(u16 uint16, f func(Session)) {
+func (h *Handler) HandleFunc(u16 uint16, f func(Session) error) {
 	h.frameWorker[u16] = f
 }
 
-//Route 帧处理器函数路由
-func (h *Handler) Route(s Session) error {
-	ft := s.GetFrameSlice().GetFrameType()
+//route 帧处理器函数路由
+func (h *Handler) route(ft uint16, s Session) error {
 	if h.frameWorker[ft] != nil {
-		h.frameWorker[ft].(func(Session))(s)
-	} else {
-		return errors.New("Route|处理器函数为nil。")
+		return h.frameWorker[ft].(func(Session) error)(s)
 	}
-	return nil
+	return fmt.Errorf("Route|处理器函数为nil。%d", int(ft))
 }
 
 //Session 会话接口

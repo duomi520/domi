@@ -76,7 +76,7 @@ func Test_tcpServerPingPong(t *testing.T) {
 	}
 }
 
-func testPingFunc55(s Session) {
+func testPingFunc55(s Session) error {
 	num := atomic.LoadInt32(&testPingFuncNum)
 	if !bytes.EqualFold([]byte("ping"+strconv.Itoa(int(num))), s.GetFrameSlice().GetData()) {
 		fmt.Println("testPingFunc55不相等。", s.GetFrameSlice().GetData())
@@ -85,8 +85,9 @@ func testPingFunc55(s Session) {
 		fmt.Println(err.Error())
 	}
 	atomic.AddInt32(&testPingFuncNum, 1)
+	return nil
 }
-func testPingFunc56(s Session) {
+func testPingFunc56(s Session) error {
 	num := atomic.LoadInt32(&testPingFuncNum)
 	if !bytes.EqualFold([]byte("ping"+strconv.Itoa(int(num))), s.GetFrameSlice().GetData()) {
 		fmt.Println("testPingFunc56不相等。", s.GetFrameSlice().GetData())
@@ -95,10 +96,12 @@ func testPingFunc56(s Session) {
 		fmt.Println(err.Error())
 	}
 	atomic.AddInt32(&testPingFuncNum, 1)
+	return nil
 }
-func testPongFunc(s Session) {
+func testPongFunc(s Session) error {
 	if !bytes.EqualFold([]byte("pong"), s.GetFrameSlice().GetData()) {
 		fmt.Println("testPongFunc不相等。", s.GetFrameSlice().GetData())
 	}
 	atomic.AddInt32(&testPongFuncNum, 1)
+	return nil
 }

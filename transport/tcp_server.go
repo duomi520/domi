@@ -29,7 +29,7 @@ type ServerTCP struct {
 
 //NewServerTCP 新建
 func NewServerTCP(ctx context.Context, post string, h *Handler, sfID *util.SnowFlakeID) *ServerTCP {
-	logger, _ := util.NewLogger(util.ErrorLevel, "")
+	logger, _ := util.NewLogger(util.DebugLevel, "")
 	logger.SetMark("ServerTCP")
 	if sfID == nil {
 		logger.Fatal("NewServerTCP|SnowFlakeID为nil")
@@ -39,7 +39,10 @@ func NewServerTCP(ctx context.Context, post string, h *Handler, sfID *util.SnowF
 		logger.Fatal("NewServerTCP|Handler不为nil")
 		return nil
 	}
-
+	h.HandleFunc(FrameTypeHeartbeat, func(s Session) error {
+		go s.WriteFrameDataPromptly(FrameHeartbeat)
+		return nil
+	})
 	tcpAddress, err := net.ResolveTCPAddr("tcp4", post)
 	listener, err := net.ListenTCP("tcp", tcpAddress)
 	if err != nil {
@@ -157,22 +160,22 @@ func (s *ServerTCP) ioLoop(session *SessionTCP) error {
 		}
 	}()
 	for {
+	loop:
 		if err := session.ioRead(); err != nil {
 			return err
 		}
-		ft := session.getFrameType()
-		for ft != FrameTypeNil {
-			if ft == FrameTypeExit {
-				return nil
-			}
-			if ft == FrameTypeHeartbeat {
-			} else {
-				if err := s.handler.Route(session); err != nil {
-					return err
+		for {
+			ft := session.getFrameType()
+			if err := s.handler.route(ft, session); err != nil {
+				if ft == FrameTypeNil {
+					goto loop
 				}
+				if ft == FrameTypeExit {
+					return nil
+				}
+				return err
 			}
 			session.r += int(util.BytesToUint32(session.rBuf[session.r : session.r+4]))
-			ft = session.getFrameType()
 		}
 	}
 }
