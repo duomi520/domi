@@ -22,8 +22,8 @@ func Test_newPeer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(1 * time.Second)
-	address, _ := p0.getAllMachineAddress()
+	time.Sleep(15 * time.Second)
+	_, address, _ := p0.getAllMachineAddress()
 	if len(address) != 3 {
 		t.Fatal(address)
 	}

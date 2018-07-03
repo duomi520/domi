@@ -115,6 +115,7 @@ func (d *Dispatcher) Run() {
 			n := len(workerPool) - 1
 			if n < 0 {
 				//池中协程用完后，新建协程，牺牲内存抗峰值。
+				//TODO 压测时，内存上升快，同时协程太多，调度不过来，反而更慢，需改善。
 				worker := NewWorker(d)
 				d.Wrap(worker.run)
 				worker.jobChan <- job

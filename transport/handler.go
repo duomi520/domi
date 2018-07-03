@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/duomi520/domi/util"
 )
 
 //ProtocolMagicNumber 协议头
@@ -14,6 +16,9 @@ const DefaultHeartbeatDuration time.Duration = time.Second * 5
 
 //DefaultDeadlineDuration IO超时
 const DefaultDeadlineDuration time.Duration = time.Second * 10
+
+//DefaultWaitCloseDuration 等待关闭时间
+const DefaultWaitCloseDuration time.Duration = time.Second * 2
 
 //Handler 帧处理器函数handler
 type Handler struct {
@@ -32,6 +37,11 @@ func NewHandler() *Handler {
 	h.HandleFunc(FrameTypeExit, func(Session) error {
 		return errFrameTypeExit
 	})
+	h.HandleFunc(FrameTypeState, func(s Session) error {
+		ft := s.GetFrameSlice().GetData()
+		s.SetState(util.BytesToInt64(ft))
+		return nil
+	})
 	return h
 }
 
@@ -49,15 +59,17 @@ func (h *Handler) route(ft uint16, s Session) error {
 	return fmt.Errorf("Route|处理器函数为nil。%d", int(ft))
 }
 
-//Session 会话接口
-type Session interface {
-	GetID() int64
-	GetFrameSlice() *FrameSlice //帧指向的空间将在下次io读取时被覆盖。
-	WriteFrameDataPromptly(*FrameSlice) error
-	WriteFrameDataToCache(*FrameSlice) error
-}
-
 //protocolMagic 判断协议头是否有效
 func protocolMagic(u uint32) bool {
 	return u == ProtocolMagicNumber
+}
+
+//Session 会话接口
+type Session interface {
+	GetFrameSlice() *FrameSlice //帧指向的空间将在下次io读取时被覆盖。
+	WriteFrameDataPromptly(*FrameSlice) error
+	WriteFrameDataToCache(*FrameSlice) error
+	SetState(int64)
+	SyncState(int64, int64) error
+	GetState() int64
 }

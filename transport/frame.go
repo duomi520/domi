@@ -24,7 +24,7 @@ const (
 	FrameTypePing
 	FrameTypePong
 	FrameTypeOverflow
-	FrameType6
+	FrameTypeState
 	FrameType7
 	FrameTypeNodeName
 	FrameTypeReply

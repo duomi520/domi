@@ -11,6 +11,15 @@ import (
 	"github.com/duomi520/domi/util"
 )
 
+//定义状态
+const (
+	StateNil int64 = iota
+	StateDie
+	StateWork
+	StatePause
+	StateStop
+)
+
 //定义错误
 var (
 	ErrFailureIORead = errors.New("transport.SessionTCP.ioRead|rBuf缓存溢出。")
@@ -18,13 +27,14 @@ var (
 
 //SessionTCP 会话
 type SessionTCP struct {
-	ID         int64
+	state      int64
 	Conn       *net.TCPConn
 	dispatcher *util.Dispatcher
 	rBuf       []byte
 	w          int //rBuf 读位置序号
 	r          int //rBuf 写位置序号
 	wSlot      *slot
+	closeOnce  sync.Once
 	sync.WaitGroup
 }
 
@@ -40,8 +50,42 @@ func NewSessionTCP(conn *net.TCPConn) *SessionTCP {
 	return s
 }
 
-//GetID 取得ID
-func (s *SessionTCP) GetID() int64 { return s.ID }
+//SetState 设
+func (s *SessionTCP) SetState(st int64) {
+	atomic.StoreInt64(&s.state, st)
+	switch st {
+	case StateStop:
+		time.AfterFunc(DefaultWaitCloseDuration, s.Close)
+	}
+}
+
+//GetState 读
+func (s *SessionTCP) GetState() int64 {
+	return atomic.LoadInt64(&s.state)
+}
+
+//SyncState 同步
+func (s *SessionTCP) SyncState(own, dst int64) error {
+	buf := make([]byte, 8)
+	util.CopyInt64(buf, dst)
+	f := NewFrameSlice(FrameTypeState, buf, nil)
+	var err error
+	if err = s.WriteFrameDataPromptly(f); err != nil {
+		s.SetState(own)
+	}
+	return err
+}
+
+//Close 关闭
+func (s *SessionTCP) Close() {
+	s.closeOnce.Do(func() {
+		s.Conn.Close()
+		util.BytesPoolPut(s.rBuf)
+		if s.wSlot != nil {
+			util.BytesPoolPut(s.wSlot.buf)
+		}
+	})
+}
 
 //GetFrameSlice 取得当前帧,线程不安全,必要时先拷贝。
 func (s *SessionTCP) GetFrameSlice() *FrameSlice {
@@ -66,14 +110,6 @@ func (s *SessionTCP) getFrameType() uint16 {
 		return FrameTypeNil
 	}
 	return util.BytesToUint16(s.rBuf[s.r+6 : s.r+8])
-}
-
-//Release 释放
-func (s *SessionTCP) Release() {
-	util.BytesPoolPut(s.rBuf)
-	if s.wSlot != nil {
-		util.BytesPoolPut(s.wSlot.buf)
-	}
 }
 
 //ioRead 读数据到rBuf，注意：每次ioRead,rBuf中的数据将被写入新数据。

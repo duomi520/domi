@@ -19,10 +19,10 @@ var pong = []byte("pong")
 
 func main() {
 	fmt.Println("本地机器的逻辑CPU个数:", runtime.NumCPU())
-	testN(100)
-	testN(500)
-	testN(1000)
-	testN(2500)
+	//testN(100)
+	//testN(500)
+	//testN(1000)
+	//testN(2500)
 	//
 	clientN(100)
 	clientN(500)
@@ -30,6 +30,8 @@ func main() {
 	clientN(2500)
 	clientN(4000)
 }
+
+/*
 func testN(num int) {
 	sessions := make([]*transport.SessionTCP, num)
 	var wg sync.WaitGroup
@@ -55,7 +57,7 @@ func testN(num int) {
 					os.Exit(1)
 				}
 				if n, err := ss[index].Conn.Read(buf); err != nil {
-					fmt.Println("+ioRead", jj, l, index, n, err)
+					fmt.Println("+ioRead", jj, l, index, n, err, buf)
 					os.Exit(1)
 				}
 			}
@@ -71,6 +73,7 @@ func testN(num int) {
 		sessions[c].Conn.Close()
 	}
 }
+*/
 func dial() *transport.SessionTCP {
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", "127.0.0.1:4567")
 	conn, err := net.DialTCP("tcp", nil, tcpAddr)
@@ -91,6 +94,9 @@ func dial() *transport.SessionTCP {
 var clientNwg sync.WaitGroup
 
 func clientN(num int) {
+	sd := util.NewDispatcher("TCPClient", 256)
+	go sd.Run()
+	defer sd.Close()
 	loop := 25000000
 	//	f, _ := os.Create("profile.mem")
 	//	defer f.Close()
@@ -100,12 +106,12 @@ func clientN(num int) {
 	cs := make([]*transport.ClientTCP, num)
 	for i := 0; i < num; i++ {
 		k := i
-		cs[i], err = transport.NewClientTCP(context.TODO(), "127.0.0.1:4567", h)
-		cs[i].Logger.SetLevel(util.ErrorLevel)
+		cs[i], err = transport.NewClientTCP(context.TODO(), "127.0.0.1:4567", h, sd)
 		if err != nil {
 			fmt.Println("连接服务端失败:", err.Error())
 			os.Exit(1)
 		}
+		cs[i].Logger.SetLevel(util.ErrorLevel)
 		go cs[k].Run()
 		time.Sleep(1 * time.Millisecond) //防止连接太快，被操作系统拒绝。
 	}
@@ -115,7 +121,7 @@ func clientN(num int) {
 	start := time.Now()
 	for i := 0; i < loop; i++ {
 		index := i % num
-		cs[index].Send(transport.FramePing)
+		cs[index].Csession.WriteFrameDataToCache(transport.FramePing)
 		//cs[index].Csession.WriteFrameDataPromptly(transport.FramePing)
 	}
 	clientNwg.Wait()
@@ -125,7 +131,7 @@ func clientN(num int) {
 	//	pprof.WriteHeapProfile(f)
 	time.Sleep(time.Second)
 	for i := 0; i < num; i++ {
-		cs[i].Close()
+		cs[i].Csession.Close()
 	}
 	cs = nil
 }

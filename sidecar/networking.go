@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -14,10 +15,15 @@ import (
 
 //Contact 通讯联络
 type Contact struct {
-	ctx        context.Context
+	ctx context.Context
+
+	dispatcher *util.Dispatcher
 	tcpServer  *transport.ServerTCP
+	tcpMap     *sync.Map //key: 机器id  value:  session
+
 	httpServer *http.Server
-	closeOnce  sync.Once
+
+	closeOnce sync.Once
 
 	*transport.Handler
 	*Peer
@@ -27,6 +33,7 @@ type Contact struct {
 func newContact(ctx context.Context, name, HTTPPort, TCPPort string, endpoints []string) (*Contact, error) {
 	c := &Contact{
 		ctx:     ctx,
+		tcpMap:  &sync.Map{},
 		Handler: transport.NewHandler(),
 	}
 	var err error
@@ -34,13 +41,14 @@ func newContact(ctx context.Context, name, HTTPPort, TCPPort string, endpoints [
 	if err != nil {
 		return nil, errors.New("newContact|Peer失败：" + err.Error())
 	}
+	c.dispatcher = util.NewDispatcher("TCP", 256)
 	//tcp支持
-	c.tcpServer = transport.NewServerTCP(ctx, TCPPort, c.Handler, c.SnowFlakeID)
+	c.tcpServer = transport.NewServerTCP(ctx, TCPPort, c.Handler, c.dispatcher)
 	if c.tcpServer == nil {
 		return nil, errors.New("newContact|NewServerTCP失败:" + TCPPort)
 	}
+	c.tcpServer.Logger.SetMark(strconv.FormatInt(GetNodeID(c.FullName), 10))
 	c.HandleFunc(transport.FrameTypeNodeName, c.addSessionTCP)
-
 	//http支持
 	c.httpServer = &http.Server{
 		Addr:           HTTPPort,
@@ -67,13 +75,29 @@ func (c *Contact) exit(w http.ResponseWriter, r *http.Request) {
 			c.ctx.Value(util.KeyCtxStopFunc).(func())()
 		}
 	})
-	fmt.Fprintln(w, "exiting")
+	fmt.Fprintln(w, "exit")
 }
+
+//
+//
+//
 
 //addSessionTCP 用户连接时
 func (c *Contact) addSessionTCP(s transport.Session) error {
 	ft := s.GetFrameSlice()
-	c.NodeMap.Store(string(ft.GetData()), s)
-	c.NodeMap.Store(getNodeID(string(ft.GetData())), s)
+	c.tcpMap.Store(GetNodeID(string(ft.GetData())), s)
 	return nil
+}
+
+//getSession 取得会话 target必须int64 TODO
+func (c *Contact) getSession(target interface{}) (transport.Session, error) {
+	v, ok := c.tcpMap.Load(target)
+	if !ok {
+		return nil, fmt.Errorf("getSession|tcpMap:%d", target.(int64))
+	}
+	s := v.(transport.Session)
+	if s.GetState() == transport.StateWork {
+		return s, nil
+	}
+	return nil, errors.New("no work")
 }

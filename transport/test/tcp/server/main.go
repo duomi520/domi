@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/duomi520/domi/transport"
 	"github.com/duomi520/domi/util"
@@ -12,8 +11,9 @@ import (
 func main() {
 	a := util.NewApplication()
 	h := transport.NewHandler()
-	sfID := util.NewSnowFlakeID(1, time.Now().UnixNano())
-	s := transport.NewServerTCP(a.Ctx, ":4567", h, sfID)
+	sd := util.NewDispatcher("TCP", 256)
+	go sd.Run()
+	s := transport.NewServerTCP(a.Ctx, ":4567", h, sd)
 	h.HandleFunc(transport.FrameTypePing, ping)
 	if s == nil {
 		fmt.Println("启动tcp服务失败。")
@@ -22,6 +22,7 @@ func main() {
 	s.Logger.SetLevel(util.InfoLevel)
 	a.RunAssembly(s)
 	a.Run()
+	sd.Close()
 }
 func ping(s transport.Session) error {
 	if err := s.WriteFrameDataToCache(transport.FramePong); err != nil {

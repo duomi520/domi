@@ -14,27 +14,20 @@ import (
 
 //ServerTCP TCP服务
 type ServerTCP struct {
-	ctx               context.Context
-	sfID              *util.SnowFlakeID
-	dispatcher        *util.Dispatcher
-	tcpAddress        *net.TCPAddr
-	tcpListener       *net.TCPListener
-	tcpPost           string
-	handler           *Handler
-	OnNewSessionTCP   func(Session)
-	OnCloseSessionTCP func(Session)
-	Logger            *util.Logger
+	ctx         context.Context
+	dispatcher  *util.Dispatcher
+	tcpAddress  *net.TCPAddr
+	tcpListener *net.TCPListener
+	tcpPost     string
+	handler     *Handler
+	Logger      *util.Logger
 	util.WaitGroupWrapper
 }
 
 //NewServerTCP 新建
-func NewServerTCP(ctx context.Context, post string, h *Handler, sfID *util.SnowFlakeID) *ServerTCP {
+func NewServerTCP(ctx context.Context, post string, h *Handler, sd *util.Dispatcher) *ServerTCP {
 	logger, _ := util.NewLogger(util.DebugLevel, "")
 	logger.SetMark("ServerTCP")
-	if sfID == nil {
-		logger.Fatal("NewServerTCP|SnowFlakeID为nil")
-		return nil
-	}
 	if h == nil {
 		logger.Fatal("NewServerTCP|Handler不为nil")
 		return nil
@@ -50,28 +43,26 @@ func NewServerTCP(ctx context.Context, post string, h *Handler, sfID *util.SnowF
 	}
 	s := &ServerTCP{
 		ctx:         ctx,
-		sfID:        sfID,
+		dispatcher:  sd,
 		tcpAddress:  tcpAddress,
 		tcpListener: listener,
 		tcpPost:     post,
 		handler:     h,
 		Logger:      logger,
 	}
-	s.dispatcher = util.NewDispatcher("TCPSend", 256)
 	return s
 }
 
 //Run 运行
 func (s *ServerTCP) Run() {
-	go s.dispatcher.Run()
 	go func() {
 		var closeOnce sync.Once
 		<-s.ctx.Done()
 		closeOnce.Do(func() {
 			if err := s.tcpListener.Close(); err != nil {
-				s.Logger.Error("Close|TCP监听端口关闭失败:", err)
+				s.Logger.Error("tcpServer|TCP监听端口关闭失败:", err)
 			} else {
-				s.Logger.Debug("Close|TCP监听端口关闭。")
+				s.Logger.Debug("tcpServer|TCP监听端口关闭。")
 			}
 		})
 	}()
@@ -90,37 +81,29 @@ func (s *ServerTCP) Run() {
 			}
 			break
 		}
-		id, err := s.sfID.NextID()
-		if err != nil {
-			s.Logger.Error("tcpServer|生成SnowFlakeID错误:", err)
-			continue
-		}
 		if err = conn.SetNoDelay(false); err != nil {
 			s.Logger.Error("tcpServer|设定操作系统是否应该延迟数据包传递失败:" + err.Error())
 		}
-		go tcpReceive(s, id, conn)
+		go tcpReceive(s, conn)
 	}
 	s.Logger.Debug("tcpServer|等待子协程关闭……")
 	s.Wait()
-	s.dispatcher.Close()
-	s.Logger.Debug("tcpServer|关闭。")
+	s.Logger.Debug("tcpServer|ServerTCP关闭。")
 }
 
 //tcpReceive 接收
-func tcpReceive(s *ServerTCP, id int64, conn *net.TCPConn) {
+func tcpReceive(s *ServerTCP, conn *net.TCPConn) {
 	defer func() {
 		if r := recover(); r != nil {
 			s.Logger.Error("tcpReceive|defer错误：", r, string(debug.Stack()))
 		}
 	}()
 	session := NewSessionTCP(conn)
-	session.ID = id
 	session.dispatcher = s.dispatcher
 	s.Add(1)
 	defer func() {
 		session.Wait()
-		session.Conn.Close()
-		session.Release()
+		session.Close()
 		s.Done()
 	}()
 	var pm uint32
@@ -133,13 +116,7 @@ func tcpReceive(s *ServerTCP, id int64, conn *net.TCPConn) {
 		s.Logger.Warn("tcpReceive|警告: 无效的协议头。")
 		return
 	}
-	if s.OnNewSessionTCP != nil {
-		s.OnNewSessionTCP(session)
-	}
 	err = s.ioLoop(session)
-	if s.OnCloseSessionTCP != nil {
-		s.OnCloseSessionTCP(session)
-	}
 	if err == io.EOF {
 		err = nil
 	}
@@ -149,7 +126,7 @@ func tcpReceive(s *ServerTCP, id int64, conn *net.TCPConn) {
 			return
 		}
 	}
-	s.Logger.Debug("tcpReceive|连接断开：", session.Conn.RemoteAddr(), " err:", err)
+	s.Logger.Debug("tcpReceive|会话断开：", session.Conn.RemoteAddr(), " err:", err)
 }
 
 //ioLoop 接收
@@ -162,6 +139,9 @@ func (s *ServerTCP) ioLoop(session *SessionTCP) error {
 	for {
 	loop:
 		if err := session.ioRead(); err != nil {
+			if strings.Contains(err.Error(), "use of closed network connection") {
+				return nil
+			}
 			return err
 		}
 		for {

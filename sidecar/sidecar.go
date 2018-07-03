@@ -2,12 +2,11 @@ package sidecar
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
-	"sync/atomic"
+	"time"
 
 	"github.com/coreos/etcd/clientv3"
 	"github.com/duomi520/domi/transport"
@@ -24,7 +23,7 @@ type Sidecar struct {
 
 //NewSidecar 新建
 func NewSidecar(ctx context.Context, name, HTTPPort, TCPPort string, endpoints []string) *Sidecar {
-	logger, _ := util.NewLogger(util.DebugLevel, "")
+	logger, _ := util.NewLogger(util.ErrorLevel, "")
 	s := &Sidecar{
 		ctx:    ctx,
 		Logger: logger,
@@ -35,7 +34,7 @@ func NewSidecar(ctx context.Context, name, HTTPPort, TCPPort string, endpoints [
 		logger.Fatal("NewSidecar|Contact失败：", err.Error())
 		return nil
 	}
-	logger.SetMark("Sidecar")
+	logger.SetMark(fmt.Sprintf("Sidecar.%d", GetNodeID(s.FullName)))
 	return s
 }
 
@@ -53,7 +52,10 @@ func (s *Sidecar) Send(target interface{}, fs *transport.FrameSlice) error {
 
 //Run 运行
 func (s *Sidecar) Run() {
-	s.Logger.Info("Run|启动……")
+	s.Logger.Info(fmt.Sprintf("Run|%d启动……", s.leaseID))
+	heartbeat := time.NewTicker(transport.DefaultHeartbeatDuration)
+	defer heartbeat.Stop()
+	heartbeatMap := make(map[int64]*transport.ClientTCP, 1024) //key:机器id  value:  ClientTCP
 	//启动http
 	go func() {
 		s.Logger.Info("Run|HTTP监听端口", s.HTTPPort)
@@ -62,71 +64,64 @@ func (s *Sidecar) Run() {
 		}
 	}()
 	//启动tcp
+	go s.dispatcher.Run()
 	s.Logger.Info("Run|TCP监听端口", s.TCPPort)
 	s.RunAssembly(s.tcpServer)
 	//与其它服务器建立连接
-	if allMachine, err := s.getAllMachineAddress(); err != nil {
+	if mkey, allMachine, err := s.getAllMachineAddress(); err != nil {
 		s.Logger.Error("Run|", err.Error())
 	} else {
-		for _, url := range allMachine {
-			cli, err := transport.NewClientTCP(context.TODO(), url, s.Handler)
+		for index, url := range allMachine {
+			cli, err := transport.NewClientTCP(s.ctx, url, s.Handler, s.dispatcher)
 			if err != nil {
 				s.Logger.Error("Run|错误：" + err.Error())
 			}
-			s.ClientMap[url] = cli
-			s.RunAssembly(cli) //TODO 优化,仅需发心跳就可以。
+			Nodeid := GetNodeID(mkey[index])
+			cli.Logger.SetMark(strconv.FormatInt(GetNodeID(s.FullName), 10))
+			heartbeatMap[Nodeid] = cli
+			s.tcpMap.Store(Nodeid, cli.Csession)
+			s.RunAssembly(cli)
 			fs := transport.NewFrameSlice(transport.FrameTypeNodeName, []byte(s.FullName), nil)
-			go cli.Csession.WriteFrameDataPromptly(fs)
+			cli.Csession.WriteFrameDataToCache(fs)
 		}
 	}
-	atomic.StoreInt64(&s.ServiceState, ServiceStateRun)
 	for {
 		select {
-		case mw := <-s.NodeWatchChan:
-			s.machineGuard(mw)
-		case <-s.ctx.Done():
-			atomic.StoreInt64(&s.ServiceState, ServiceStateStop)
-			s.Logger.Info("Run|等待子模块关闭……")
-			for _, cli := range s.ClientMap {
-				cli.Close() //TODO 完善关闭机制
+		case <-heartbeat.C:
+			for key, v := range heartbeatMap {
+				if err := v.Heartbeat(); err != nil {
+					delete(heartbeatMap, key)
+				}
 			}
+		case mw := <-s.NodeWatchChan:
+			for _, ev := range mw.Events {
+				switch ev.Type {
+				case clientv3.EventTypeDelete:
+					nodeiID := GetNodeID(string(ev.Kv.Key))
+					v, ok := s.tcpMap.Load(nodeiID)
+					if ok {
+						ss := v.(transport.Session)
+						ss.SetState(transport.StateStop)
+						s.tcpMap.Delete(nodeiID)
+					}
+					//	s.Logger.Debug(ev.Type, string(ev.Kv.Key), ev.Kv.Value)
+				}
+			}
+		case <-s.ctx.Done():
+			s.Logger.Info("Run|等待子模块关闭……")
+			//通知关闭
+			s.tcpMap.Range(func(k, v interface{}) bool {
+				v.(transport.Session).SyncState(transport.StateStop, transport.StateStop)
+				return true
+			})
 			s.Wait()
 			s.httpServer.Shutdown(context.TODO())
-			s.Logger.Info("Run|关闭。")
+			s.dispatcher.Close()
+			s.Logger.Info("Run|Sidecar关闭。")
 			if err := s.releasePeer(); err != nil {
 				s.Logger.Error(err)
 			}
-			atomic.StoreInt64(&s.ServiceState, ServiceStateDie)
 			return
-		}
-	}
-}
-
-//machineGuard 维护
-func (s *Sidecar) machineGuard(wc clientv3.WatchResponse) {
-	for _, ev := range wc.Events {
-		switch ev.Type {
-		case clientv3.EventTypePut:
-			info := &AddressInfo{}
-			if err := json.Unmarshal([]byte(ev.Kv.Value), info); err != nil {
-				s.Logger.Error("guard|json解码错误：" + err.Error())
-			}
-			cli, err := transport.NewClientTCP(context.TODO(), info.URL, s.Handler)
-			if err != nil {
-				s.Logger.Error("guard|NewClientTCP错误：" + err.Error())
-			}
-			s.RunAssembly(cli) //TODO 优化
-			fs := transport.NewFrameSlice(transport.FrameTypeNodeName, []byte(s.FullName), nil)
-			go cli.Csession.WriteFrameDataPromptly(fs)
-			s.addNode(*info, cli)
-			//s.Logger.Debug(ev.Type, ev.Kv.Key, ev.Kv.Value, info)
-		case clientv3.EventTypeDelete:
-			info, ok := s.AddressInfoMap[string(ev.Kv.Value)]
-			if ok {
-				s.ClientMap[info.URL].Close() //TODO 完善关闭机制
-				s.removeNode(info, ev.Kv.Value)
-			}
-			//s.Logger.Debug(ev.Type, ev.Kv.Key, ev.Kv.Value)
 		}
 	}
 }
@@ -172,8 +167,8 @@ func (s *Sidecar) GetChannels(channel uint16) ([]int, error) {
 	return mids, nil
 }
 
-//getNodeID
-func getNodeID(s string) int64 {
+//GetNodeID 转换
+func GetNodeID(s string) int64 {
 	i := strings.LastIndex(s, "/")
 	d, err := strconv.Atoi(s[i+1:])
 	if err != nil {

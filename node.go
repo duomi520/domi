@@ -168,7 +168,7 @@ func (n *Node) handleWrapper(s transport.Session) error {
 //Tell 单向告诉，不回复
 func (n *Node) Tell(ft uint16, target string, data []byte) error {
 	fs := transport.NewFrameSlice(ft, data, nil)
-	return n.sidecar.Send(target, fs)
+	return n.sidecar.Send(sidecar.GetNodeID(target), fs)
 }
 
 //Call 请求 request-reply	每个请求都带有回应id
@@ -178,7 +178,7 @@ func (n *Node) Call(ft uint16, target string, data []byte, f func(*ContextMQ)) e
 	util.CopyUint32(ex, fu)
 	n.userFunc[fu] = f
 	fs := transport.NewFrameSlice(ft, data, ex)
-	return n.sidecar.Send(target, fs)
+	return n.sidecar.Send(sidecar.GetNodeID(target), fs)
 }
 
 //Run 运行
@@ -214,7 +214,7 @@ func (n *Node) Subscribe(channel uint16, target string, f func(*ContextMQ)) (uin
 		util.CopyUint16(data[4:], channel)
 		n.sidecar.HandleFunc(channel, n.callWorkFunc)
 		fs := transport.NewFrameSlice(transport.FrameTypeJoinChannel, data, nil)
-		return user, n.sidecar.Send(target, fs)
+		return user, n.sidecar.Send(sidecar.GetNodeID(target), fs)
 	}
 	c.add(int(user))
 	return user, nil
@@ -254,7 +254,7 @@ func (n *Node) Unsubscribe(user uint32, channel uint16, target string) error {
 			util.CopyUint32(data[0:4], uint32(nid))
 			util.CopyUint16(data[4:], channel)
 			fs := transport.NewFrameSlice(transport.FrameTypeLeaveChannel, data, nil)
-			return n.sidecar.Send(target, fs)
+			return n.sidecar.Send(sidecar.GetNodeID(target), fs)
 		}
 	}
 	return errors.New("Unsubscribe|channelUserMap:找不到。")
@@ -277,7 +277,7 @@ func (n *Node) Ventilator(pipe uint16, target []string, data []byte) error {
 		return errors.New("Ventilator|json编码失败: " + err.Error())
 	}
 	fs := transport.NewFrameSlice(pipe, data, vj)
-	return n.sidecar.Send(target[0], fs)
+	return n.sidecar.Send(sidecar.GetNodeID(target[0]), fs)
 }
 
 //JoinBus 加入总线频道 返回订阅者ID  bus	TODO 同步阻塞及超时问题
@@ -380,5 +380,5 @@ func (c *ContextMQ) Next(data []byte) error {
 		return errors.New("Next|json编码失败: " + err.Error())
 	}
 	fs := transport.NewFrameSlice(c.session.GetFrameSlice().GetFrameType(), data, vj)
-	return c.sidecar.Send(pipeline.Target[0], fs)
+	return c.sidecar.Send(sidecar.GetNodeID(pipeline.Target[0]), fs)
 }
