@@ -2,7 +2,7 @@
 <html lang="en">
 
 <head>
-    <title>Chat</title>
+    <title>test</title>
     <script type="text/javascript">
         window.onload = function () {
             var conn;
@@ -10,8 +10,6 @@
             var log = document.getElementById("log");
             var enc = new TextEncoder("utf-8");
             var little_endian = true;
-            var extend = new ArrayBuffer(18);
-            var number = 0;
             function appendLog(item) {
                 var doScroll = log.scrollTop === log.scrollHeight - log.clientHeight;
                 log.appendChild(item);
@@ -28,81 +26,35 @@
                     return false;
                 }
                 var v = enc.encode(msg.value);
-                var buffer = new ArrayBuffer(26 + v.length);
+                var buffer = new ArrayBuffer(v.length);
                 var view = new DataView(buffer);
-                var exV = new DataView(extend);
-                view.setUint32(0, 26 + v.length, little_endian);
-                view.setUint16(4, 18, little_endian);
-                view.setUint16(6, 8, little_endian);  //FrameTypeGateToNextZoneFunc
-                for (var i = 0, n = v.length; i < n; i++) { view.setUint8(i + 8, v[i]); }
-                for (var j = 0, n = 18; j < n; j++) { view.setUint8(8 + v.length + j, exV.getUint8(j)); }
-                //  console.log(buffer)
+                for (var i = 0, n = v.length; i < n; i++) view.setUint8(i, v[i]);
                 conn.send(buffer);
                 msg.value = "";
                 return false;
             };
 
             if (window["WebSocket"]) {
-                conn = new WebSocket("ws://127.0.0.1:8080/ws");
-                conn.onopen = function (evt) {
-                    var Magic = new ArrayBuffer(4);
-                    var MagicView = new DataView(Magic);
-                    MagicView.setUint32(0, 2299, little_endian);
-                    conn.send(Magic);
-                    //join room
-                    var buffer = new ArrayBuffer(8);
-                    var view = new DataView(buffer);
-                    view.setUint32(0, 8, little_endian);
-                    view.setUint16(4, 0, little_endian);
-                    view.setUint16(6, 50, little_endian); //chat.FrameTypeJoin
-                    conn.send(buffer);
-                };
+                conn = new WebSocket("ws://{{$}}/ws");
                 conn.onclose = function (evt) {
                     var item = document.createElement("div");
                     item.innerHTML = "<b>连接已关闭。</b>";
                     appendLog(item);
                 };
                 conn.onmessage = function (evt) {
-                    if (evt.data.size <= 8) { return; }
-                    number++;
-                    if (number == 1) {
-                        var reader = new FileReader();
-                        var b = evt.data.slice(8, evt.data.size);
-                        reader.readAsArrayBuffer(b);
-                        reader.onloadend = function (e) {
-                            var re = new DataView(this.result);
-                            var ex = new DataView(extend);
-                            for (var i = 0, n = 16; i < n; i++) { ex.setUint8(i, re.getUint8(i), little_endian); }
-                            ex.setUint16(16, 51, little_endian);  //chat.FrameTypeMessage
-                        }
-                        return;
-                    }
                     var reader = new FileReader();
-                    var b = evt.data.slice(8, evt.data.size);
-                    reader.readAsText(b);
+                    reader.readAsText(evt.data);
                     reader.onloadend = function (e) {
                         var item = document.createElement("div");
                         item.innerText = this.result;
                         appendLog(item);
-                    }
+                    };
                 };
-                var int = self.setInterval(heartbeat, 2000);
-
             } else {
                 var item = document.createElement("div");
                 item.innerHTML = "<b>您的浏览器不支持 WebSockets。</b>";
                 appendLog(item);
             };
-            function heartbeat() {
-                if (conn.readyState == 1) {
-                    var buffer = new ArrayBuffer(8);
-                    var view = new DataView(buffer);
-                    view.setUint32(0, 8, little_endian);
-                    view.setUint16(4, 0, little_endian);
-                    view.setUint16(6, 1, little_endian);
-                    conn.send(buffer);
-                }
-            }
         };
     </script>
     <style type="text/css">

@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/duomi520/domi"
 	"github.com/duomi520/domi/transport"
 	"github.com/duomi520/domi/util"
 )
 
 func main() {
-	a := util.NewApplication()
+	a := domi.NewMaster()
 	h := transport.NewHandler()
 	sd := util.NewDispatcher("TCP", 256)
 	go sd.Run()

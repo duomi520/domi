@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	"github.com/duomi520/domi/util"
 )
 
 //ProtocolMagicNumber 协议头
@@ -34,13 +32,15 @@ func NewHandler() *Handler {
 	h.HandleFunc(FrameTypeNil, func(Session) error {
 		return errFrameTypeNil
 	})
+	h.HandleFunc(FrameTypeHeartbeatC, func(s Session) error {
+		return nil
+	})
+	h.HandleFunc(FrameTypeHeartbeatS, func(s Session) error {
+		s.WriteFrameDataPromptly(FrameHeartbeatC)
+		return nil
+	})
 	h.HandleFunc(FrameTypeExit, func(Session) error {
 		return errFrameTypeExit
-	})
-	h.HandleFunc(FrameTypeState, func(s Session) error {
-		ft := s.GetFrameSlice().GetData()
-		s.SetState(util.BytesToInt64(ft))
-		return nil
 	})
 	return h
 }
@@ -69,7 +69,5 @@ type Session interface {
 	GetFrameSlice() *FrameSlice //帧指向的空间将在下次io读取时被覆盖。
 	WriteFrameDataPromptly(*FrameSlice) error
 	WriteFrameDataToCache(*FrameSlice) error
-	SetState(int64)
-	SyncState(int64, int64) error
-	GetState() int64
+	Close()
 }

@@ -19,48 +19,52 @@ const FrameHeadLength int = 8
 //定义frameType
 const (
 	FrameTypeNil uint16 = 65500 + iota
-	FrameTypeHeartbeat
+	FrameTypeHeartbeatC
+	FrameTypeHeartbeatS
 	FrameTypeExit
 	FrameTypePing
 	FrameTypePong
 	FrameTypeOverflow
-	FrameTypeState
 	FrameType7
+	FrameType8
+	FrameType9
+	FrameType10
 	FrameTypeNodeName
 	FrameTypeReply
 	FrameTypeJoinChannel
 	FrameTypeLeaveChannel
 	FrameTypeBusGetChannels
-	FrameType13
-	FrameType14
-	FrameType15
+	FrameType16
+	FrameType17
 )
 
 //定义
 var (
-	FrameNil       *FrameSlice
-	FrameHeartbeat *FrameSlice
-	FrameExit      *FrameSlice
-	FramePing      *FrameSlice
-	FramePong      *FrameSlice
-	FrameOverflow  *FrameSlice
+	FrameNil        *FrameSlice
+	FrameHeartbeatC *FrameSlice
+	FrameHeartbeatS *FrameSlice
+	FrameExit       *FrameSlice
+	FramePing       *FrameSlice
+	FramePong       *FrameSlice
+	FrameOverflow   *FrameSlice
 )
 
 //初始化
 func init() {
-	buf := [48]byte{8, 0, 0, 0, 0, 0, 220, 255, 8, 0, 0, 0, 0, 0, 221, 255, 8, 0, 0, 0, 0, 0, 222, 255, 12, 0, 0, 0, 0, 0, 223, 255, 112, 105, 110, 103, 12, 0, 0, 0, 0, 0, 224, 255, 112, 111, 110, 103}
-	FrameNil = DecodeByBytes(buf[0:8])
-	FrameHeartbeat = DecodeByBytes(buf[8:16])
-	FrameExit = DecodeByBytes(buf[16:24])
-	FramePing = DecodeByBytes(buf[24:36])
-	FramePong = DecodeByBytes(buf[36:48])
+	buf := [56]byte{8, 0, 0, 0, 0, 0, 220, 255, 8, 0, 0, 0, 0, 0, 221, 255, 8, 0, 0, 0, 0, 0, 222, 255, 8, 0, 0, 0, 0, 0, 223, 255, 12, 0, 0, 0, 0, 0, 224, 255, 112, 105, 110, 103, 12, 0, 0, 0, 0, 0, 225, 255, 112, 111, 110, 103}
+	FrameNil = DecodeByBytes(buf[:8])
+	FrameHeartbeatC = DecodeByBytes(buf[8:16])
+	FrameHeartbeatS = DecodeByBytes(buf[16:24])
+	FrameExit = DecodeByBytes(buf[24:32])
+	FramePing = DecodeByBytes(buf[32:44])
+	FramePong = DecodeByBytes(buf[44:])
 	overflow := make([]byte, util.BytesPoolLenght+8)
 	util.CopyUint32(overflow[0:4], uint32(util.BytesPoolLenght+8))
 	util.CopyUint16(overflow[6:8], FrameTypeOverflow)
 	FrameOverflow = DecodeByBytes(overflow)
 }
 
-//FrameSlice 帧切片
+//FrameSlice 帧切片	TODO 优化减少Slice对象，减轻GC
 type FrameSlice struct {
 	data   []byte //8-byte 头 和 N-byte 数据
 	extend []byte

@@ -26,16 +26,12 @@ type ServerTCP struct {
 
 //NewServerTCP 新建
 func NewServerTCP(ctx context.Context, post string, h *Handler, sd *util.Dispatcher) *ServerTCP {
-	logger, _ := util.NewLogger(util.DebugLevel, "")
+	logger, _ := util.NewLogger(util.ErrorLevel, "")
 	logger.SetMark("ServerTCP")
 	if h == nil {
 		logger.Fatal("NewServerTCP|Handler不为nil")
 		return nil
 	}
-	h.HandleFunc(FrameTypeHeartbeat, func(s Session) error {
-		go s.WriteFrameDataPromptly(FrameHeartbeat)
-		return nil
-	})
 	tcpAddress, err := net.ResolveTCPAddr("tcp4", post)
 	listener, err := net.ListenTCP("tcp", tcpAddress)
 	if err != nil {

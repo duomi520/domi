@@ -1,45 +1,111 @@
 package main
 
 import (
+	"context"
+	"html/template"
+	"log"
+	"net/http"
+	"time"
+
 	"github.com/duomi520/domi"
-	"github.com/duomi520/domi/util"
+	"github.com/gorilla/websocket"
 )
 
+//定义
+const (
+	FrameTypeRoom uint16 = 50 + iota
+	FrameTypeMsg
+)
+
+var homeTemplate = template.Must(template.ParseFiles("home.html"))
+
+var gate *domi.Node
+
 func main() {
-	a := util.NewApplication()
-	gate := domi.NewNode(a.Ctx, "1/gate/", ":7081", ":9521", []string{"localhost:2379"})
-	/*	gto := server.NodeOptions{
-			Version:          1,
-			HTTPPort:         ":8080",
-			TCPPort:          ":8888",
-			WebsocketPattern: "/ws",
-			Name:             "gate",
+	app := domi.NewMaster()
+	gate = domi.NewNode(app.Ctx, "1/gate/", ":7081", ":9521", []string{"localhost:2379"})
+	app.RunAssembly(gate)
+	httpServer := &http.Server{
+		Addr:           ":8080",
+		Handler:        http.DefaultServeMux,
+		ReadTimeout:    10 * time.Second,
+		WriteTimeout:   10 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
+	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "favicon.ico")
+	})
+	http.HandleFunc("/", serveHome)
+	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		serveWs(w, r)
+	})
+	go func() {
+		err := httpServer.ListenAndServe()
+		if err != nil {
+			log.Fatal("ListenAndServe: ", err)
 		}
-	*/
-	//	gate = server.NewGateway(ms.Ctx, gto)
-	//注册一事件FrameTypeJoin，处理函数joinGroup
-	//	gate.Handler.HandleFunc(chat.FrameTypeJoin, joinGroup)
-	a.RunAssembly(gate)
-	a.Run()
+	}()
+	app.Run()
+	httpServer.Shutdown(context.Background())
+}
+func serveHome(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.Error(w, "Not found", 404)
+		return
+	}
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	homeTemplate.Execute(w, r.Host)
 }
 
-/*
-//joinGroup 加入组
-func joinGroup(s transport.Session) {
-	//申请服务
-	zoneID, _ := gate.CallServer(s.GetID(), "room", ":8090")
-	//回复用户
-	data := make([]byte, 16)
-	copy(data[:8], util.Int64ToBytes(zoneID))
-	copy(data[8:], util.Int64ToBytes(666))
-	f := transport.NewFrameSlice(chat.FrameTypeJoin, data, nil)
-	s.WriteFrameDataPromptly(f)
-	//通知服务节点
-	ro := make([]byte, 16)
-	copy(ro[:8], util.Int64ToBytes(s.GetID()))
-	copy(ro[8:], util.Int64ToBytes(zoneID))
-	nf := transport.NewFrameSlice(chat.FrameTypeJoin, ro, data)
-	if v, ok := gate.SessionMap.Load(zoneID); ok {
-		v.(*server.UserConnect).Session.WriteFrameDataPromptly(nf)
+type wb struct {
+	conn *websocket.Conn
+}
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  2048,
+	WriteBufferSize: 2048,
+}
+
+func serveWs(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	defer conn.Close()
+	log.Println(conn.RemoteAddr(), "start")
+	defer log.Println(conn.RemoteAddr(), "exit")
+	if err != nil {
+		log.Println("Upgrade错误：", err)
+		return
 	}
-*/
+	wbr := &wb{conn: conn}
+	sub, err := gate.Subscribe(FrameTypeRoom, 0, wbr.reply)
+	if err != nil {
+		log.Println("err:", err)
+		return
+	}
+	defer gate.Unsubscribe(sub, FrameTypeRoom, 0)
+	for {
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
+				log.Println("IsUnexpectedCloseError:", err.Error())
+			}
+			return
+		}
+		err = gate.Call(FrameTypeMsg, "1/room/", message, nil)
+		if err != nil {
+			log.Println("err:", err)
+		}
+	}
+
+}
+
+func (w *wb) reply(ctx *domi.ContextMQ) {
+	log.Println(w.conn.RemoteAddr(), string(ctx.Request))
+	err := w.conn.WriteMessage(websocket.BinaryMessage, ctx.Request)
+	if err != nil {
+		log.Println("err:", err)
+	}
+}

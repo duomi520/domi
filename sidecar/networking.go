@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
@@ -19,27 +18,24 @@ type Contact struct {
 
 	dispatcher *util.Dispatcher
 	tcpServer  *transport.ServerTCP
-	tcpMap     *sync.Map //key: 机器id  value:  session
-
 	httpServer *http.Server
 
 	closeOnce sync.Once
-
 	*transport.Handler
-	*Peer
+	*cluster
 }
 
 //newContact 新建
-func newContact(ctx context.Context, name, HTTPPort, TCPPort string, endpoints []string) (*Contact, error) {
+func newContact(ctx context.Context, name, HTTPPort, TCPPort string, operation interface{}) (*Contact, error) {
 	c := &Contact{
 		ctx:     ctx,
-		tcpMap:  &sync.Map{},
 		Handler: transport.NewHandler(),
 	}
 	var err error
-	c.Peer, err = newPeer(name, HTTPPort, TCPPort, endpoints)
+	//监视
+	c.cluster, err = newCluster(name, HTTPPort, TCPPort, operation)
 	if err != nil {
-		return nil, errors.New("newContact|Peer失败：" + err.Error())
+		return nil, err
 	}
 	c.dispatcher = util.NewDispatcher("TCP", 256)
 	//tcp支持
@@ -47,7 +43,7 @@ func newContact(ctx context.Context, name, HTTPPort, TCPPort string, endpoints [
 	if c.tcpServer == nil {
 		return nil, errors.New("newContact|NewServerTCP失败:" + TCPPort)
 	}
-	c.tcpServer.Logger.SetMark(strconv.FormatInt(GetNodeID(c.FullName), 10))
+	c.tcpServer.Logger.SetMark(fmt.Sprintf("%d", c.MachineID))
 	c.HandleFunc(transport.FrameTypeNodeName, c.addSessionTCP)
 	//http支持
 	c.httpServer = &http.Server{
@@ -57,7 +53,7 @@ func newContact(ctx context.Context, name, HTTPPort, TCPPort string, endpoints [
 		WriteTimeout:   10 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
-	pre := fmt.Sprintf("/%d", c.leaseID)
+	pre := fmt.Sprintf("/%d", c.ID)
 	http.HandleFunc(pre+"/ping", c.echo)
 	http.HandleFunc(pre+"/exit", c.exit)
 	return c, nil
@@ -78,26 +74,14 @@ func (c *Contact) exit(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "exit")
 }
 
-//
-//
-//
-
 //addSessionTCP 用户连接时
 func (c *Contact) addSessionTCP(s transport.Session) error {
 	ft := s.GetFrameSlice()
-	c.tcpMap.Store(GetNodeID(string(ft.GetData())), s)
+	id := int(util.BytesToInt64(ft.GetData()[:8]))
+	state := util.BytesToInt64(ft.GetData()[8:16])
+	group := string(ft.GetData()[16:])
+	if c.MachineID != id {
+		c.storeSessionChan <- memberMsg{id, group, state, s}
+	}
 	return nil
-}
-
-//getSession 取得会话 target必须int64 TODO
-func (c *Contact) getSession(target interface{}) (transport.Session, error) {
-	v, ok := c.tcpMap.Load(target)
-	if !ok {
-		return nil, fmt.Errorf("getSession|tcpMap:%d", target.(int64))
-	}
-	s := v.(transport.Session)
-	if s.GetState() == transport.StateWork {
-		return s, nil
-	}
-	return nil, errors.New("no work")
 }

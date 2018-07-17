@@ -11,15 +11,6 @@ import (
 	"github.com/duomi520/domi/util"
 )
 
-//定义状态
-const (
-	StateNil int64 = iota
-	StateDie
-	StateWork
-	StatePause
-	StateStop
-)
-
 //定义错误
 var (
 	ErrFailureIORead = errors.New("transport.SessionTCP.ioRead|rBuf缓存溢出。")
@@ -27,7 +18,6 @@ var (
 
 //SessionTCP 会话
 type SessionTCP struct {
-	state      int64
 	Conn       *net.TCPConn
 	dispatcher *util.Dispatcher
 	rBuf       []byte
@@ -50,35 +40,10 @@ func NewSessionTCP(conn *net.TCPConn) *SessionTCP {
 	return s
 }
 
-//SetState 设
-func (s *SessionTCP) SetState(st int64) {
-	atomic.StoreInt64(&s.state, st)
-	switch st {
-	case StateStop:
-		time.AfterFunc(DefaultWaitCloseDuration, s.Close)
-	}
-}
-
-//GetState 读
-func (s *SessionTCP) GetState() int64 {
-	return atomic.LoadInt64(&s.state)
-}
-
-//SyncState 同步
-func (s *SessionTCP) SyncState(own, dst int64) error {
-	buf := make([]byte, 8)
-	util.CopyInt64(buf, dst)
-	f := NewFrameSlice(FrameTypeState, buf, nil)
-	var err error
-	if err = s.WriteFrameDataPromptly(f); err != nil {
-		s.SetState(own)
-	}
-	return err
-}
-
 //Close 关闭
 func (s *SessionTCP) Close() {
 	s.closeOnce.Do(func() {
+		time.Sleep(200000000) //200*time.Millisecond
 		s.Conn.Close()
 		util.BytesPoolPut(s.rBuf)
 		if s.wSlot != nil {
@@ -148,7 +113,7 @@ func (s *SessionTCP) WriteFrameDataPromptly(f *FrameSlice) error {
 }
 
 //DefaultDelayedSend 延迟发送的时间间隔
-const DefaultDelayedSend time.Duration = time.Millisecond * 2
+const DefaultDelayedSend time.Duration = 2000000 //2*time.Millisecond
 
 //WriteFrameDataToCache 写入发送缓存
 func (s *SessionTCP) WriteFrameDataToCache(f *FrameSlice) error {

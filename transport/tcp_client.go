@@ -26,13 +26,10 @@ type ClientTCP struct {
 
 //NewClientTCP 新建
 func NewClientTCP(ctx context.Context, url string, h *Handler, sd *util.Dispatcher) (*ClientTCP, error) {
-	logger, _ := util.NewLogger(util.DebugLevel, "")
+	logger, _ := util.NewLogger(util.ErrorLevel, "")
 	if h == nil {
 		return nil, errors.New("NewClientTCP|Handler不为nil。")
 	}
-	h.HandleFunc(FrameTypeHeartbeat, func(s Session) error {
-		return nil
-	})
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", url)
 	if err != nil {
 		return nil, errors.New("NewClientTCP|tcpAddr失败:" + err.Error())
@@ -70,7 +67,7 @@ func NewClientTCP(ctx context.Context, url string, h *Handler, sd *util.Dispatch
 
 //Heartbeat 写入心跳包
 func (c *ClientTCP) Heartbeat() error {
-	if err := c.Csession.WriteFrameDataPromptly(FrameHeartbeat); err != nil {
+	if err := c.Csession.WriteFrameDataPromptly(FrameHeartbeatS); err != nil {
 		if !strings.Contains(err.Error(), "use of closed network connection") {
 			c.Logger.Error("Heartbeat|写入心跳包失败:", err)
 		}

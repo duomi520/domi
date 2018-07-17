@@ -19,61 +19,13 @@ var pong = []byte("pong")
 
 func main() {
 	fmt.Println("本地机器的逻辑CPU个数:", runtime.NumCPU())
-	//testN(100)
-	//testN(500)
-	//testN(1000)
-	//testN(2500)
-	//
 	clientN(100)
 	clientN(500)
 	clientN(1000)
 	clientN(2500)
-	clientN(4000)
+//	clientN(5000)
 }
 
-/*
-func testN(num int) {
-	sessions := make([]*transport.SessionTCP, num)
-	var wg sync.WaitGroup
-	for c := 0; c < num; c++ {
-		sessions[c] = dial()
-		if sessions[c] == nil {
-			fmt.Println("+连接服务端失败:", c)
-			os.Exit(1)
-		}
-	}
-	fmt.Printf("测试 ")
-	time.Sleep(2000 * time.Millisecond)
-	start := time.Now()
-	for j := 0; j < 500; j++ {
-		k := j
-		go func(jj int, ss []*transport.SessionTCP) {
-			wg.Add(1)
-			buf := make([]byte, 12)
-			for l := 0; l < 5000; l++ {
-				index := l % num
-				if err := ss[index].WriteFrameDataPromptly(transport.FramePing); err != nil {
-					fmt.Println("+SendData：", jj, l, index, err)
-					os.Exit(1)
-				}
-				if n, err := ss[index].Conn.Read(buf); err != nil {
-					fmt.Println("+ioRead", jj, l, index, n, err, buf)
-					os.Exit(1)
-				}
-			}
-			wg.Done()
-		}(k, sessions)
-	}
-	wg.Wait()
-	end := time.Now()
-	qps := 2500000.0 / end.Sub(start).Seconds()
-	fmt.Printf("%d个连接500协程qps:%6.0f\n", num, qps)
-	for c := 0; c < num; c++ {
-		sessions[c].WriteFrameDataPromptly(transport.FrameExit)
-		sessions[c].Conn.Close()
-	}
-}
-*/
 func dial() *transport.SessionTCP {
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", "127.0.0.1:4567")
 	conn, err := net.DialTCP("tcp", nil, tcpAddr)
@@ -97,7 +49,7 @@ func clientN(num int) {
 	sd := util.NewDispatcher("TCPClient", 256)
 	go sd.Run()
 	defer sd.Close()
-	loop := 25000000
+	loop := 50000000
 	//	f, _ := os.Create("profile.mem")
 	//	defer f.Close()
 	var err error
@@ -127,7 +79,7 @@ func clientN(num int) {
 	clientNwg.Wait()
 	end := time.Now()
 	qps := float64(loop) / end.Sub(start).Seconds()
-	fmt.Printf("%d个连接及协程qps:%6.0f\n", num, qps)
+	fmt.Printf("%d个连接及协程:%6.0f\n", num, qps)
 	//	pprof.WriteHeapProfile(f)
 	time.Sleep(time.Second)
 	for i := 0; i < num; i++ {
