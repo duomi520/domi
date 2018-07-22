@@ -1,160 +1,218 @@
 package sidecar
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"unsafe"
 
 	"github.com/duomi520/domi/transport"
+	"github.com/duomi520/domi/util"
+)
+
+//定义状态
+const (
+	StateDie uint32 = 1 + iota
+	StateWork
+	StatePause
 )
 
 //AskAppoint 指定请求
 func (c *cluster) AskAppoint(target int, fs *transport.FrameSlice) error {
 	var err error
-	s := atomic.LoadInt64(&c.sessionsState[target])
-	if s != StateWork {
-		return fmt.Errorf("AskAppoint|member is %d,%d!=StateWork", target, s)
-	}
+	s := atomic.LoadUint32(&c.sessionsState[target])
 	m := (*member)(atomic.LoadPointer(&c.sessions[target]))
-	if m != nil {
+	if m != nil && s == StateWork {
 		err = m.WriteFrameDataPromptly(fs)
 	} else {
-		err = fmt.Errorf("AskAppoint|sessions[%d] is nil", target)
+		err = fmt.Errorf("AskAppoint|target %d ： m==nil or state = %d", target, s)
 	}
 	return err
 }
 
-//AskGroup 请求
-func (c *cluster) AskGroup(target string, fs *transport.FrameSlice) error {
+//AskOne 请求某一个
+func (c *cluster) AskOne(channel uint16, fs *transport.FrameSlice) error {
 	var err error
-	v, ok := c.groupMap.Load(target)
-	if ok {
-		list := v.([]int)
-		s := atomic.LoadInt64(&c.sessionsState[list[0]])
-		m := (*member)(atomic.LoadPointer(&c.sessions[list[0]]))
+	v := (*[]uint16)(atomic.LoadPointer(&c.channels[channel]))
+	if v != nil {
+		id := int((*v)[0])
+		s := atomic.LoadUint32(&c.sessionsState[id])
+		m := (*member)(atomic.LoadPointer(&c.sessions[id]))
 		if m != nil && s == StateWork {
 			err = m.WriteFrameDataPromptly(fs)
 		} else {
 		}
 		//TODO 均衡负载及熔断
 	} else {
-		err = fmt.Errorf("AskGroup|groupMap no find %s", target)
+		fmt.Println(c.channels[:6], c.sessionsState[:6], c.sessions[:6])
+		err = fmt.Errorf("Ask|channels no find %d", channel)
 	}
 	return err
 }
 
-//ChangeOccupy 关闭
-func (c *cluster) ChangeOccupy(id, i int) {
-	var data [2]int
-	data[0] = id
-	data[1] = i
-	c.occupyChan <- data
+//AskAll 请求所有
+func (c *cluster) AskAll(channel uint16, fs *transport.FrameSlice) error {
+	var err error
+	v := (*[]uint16)(atomic.LoadPointer(&c.channels[channel]))
+	l := len(*v)
+	for i := 0; i < l; i++ {
+		id := int((*v)[i])
+		s := atomic.LoadUint32(&c.sessionsState[id])
+		m := (*member)(atomic.LoadPointer(&c.sessions[id]))
+		if m != nil && s == StateWork {
+			err = m.WriteFrameDataPromptly(fs)
+		}
+	}
+	return err
 }
 
-type memberMsg struct {
-	index int
-	name  string
-	state int64
-	ss    transport.Session
+type idSession struct {
+	id int
+	ss transport.Session
 }
 
 type member struct {
-	name              string
 	transport.Session //会话
 }
 
 type cluster struct {
-	sessions      [1024]unsafe.Pointer //member	原子操作
-	sessionsState [1024]int64          //状态		原子操作
-	occupy        [1024]int            //占用数
-	occupySum     int                  //占用数合计
-	groupMap      *sync.Map            //key:string, value:[]int	原子操作
+	sessions      [1024]unsafe.Pointer  //*member	原子操作
+	sessionsState [1024]uint32          //状态		原子操作
+	channels      [65536]unsafe.Pointer //*[]uint16	原子操作
 
-	storeSessionChan chan memberMsg //加入会话信号
-	occupyChan       chan [2]int    //占用数信号
+	state     uint32 //状态
+	machineID uint16
+
+	joinSessionChan   chan idSession //加入会话信号
+	PutStateChan      chan uint32
+	ChangeChannelChan chan [3]uint16 //id,channel,0 put,1 del
+	stopChan          chan struct{}
+	readyChan         chan struct{}
 
 	*Peer
 	closeOnce sync.Once
-	stopChan  chan struct{}
 }
 
 func newCluster(name, HTTPPort, TCPPort string, operation interface{}) (*cluster, error) {
 	var err error
 	c := &cluster{
-		occupySum:        0,
-		groupMap:         &sync.Map{},
-		storeSessionChan: make(chan memberMsg, 1024),
-		occupyChan:       make(chan [2]int, 1024),
-		stopChan:         make(chan struct{}),
+		joinSessionChan:   make(chan idSession, 64),
+		PutStateChan:      make(chan uint32, 64),
+		ChangeChannelChan: make(chan [3]uint16, 1024),
+		stopChan:          make(chan struct{}),
+		readyChan:         make(chan struct{}),
 	}
 	c.Peer, err = newPeer(name, HTTPPort, TCPPort, operation)
 	if err != nil {
 		return nil, err
 	}
+	c.machineID = uint16(c.MachineID)
 	return c, nil
 }
-
+func (c *cluster) Ready() {
+	<-c.readyChan
+}
 func (c *cluster) Run() {
-	temp := false
+	machineIDAndState := make([]byte, 6)
+	util.CopyUint16(machineIDAndState[:2], c.machineID)
+	stateKey := []byte("state/xx")
+	util.CopyUint16(stateKey[len(stateKey)-2:], c.machineID)
+	machineIDAndChanne := make([]byte, 4)
+	channelKey := []byte("channel/xx/xx")
+	lenChannelKey := len(channelKey)
+	err := c.initStateAndChannels()
+	close(c.readyChan)
+	if err != nil {
+		return
+	}
 	for {
 		select {
-		//加入会话
-		case ssc := <-c.storeSessionChan:
-			m := &member{name: ssc.name}
+		//put状态
+		case state := <-c.PutStateChan:
+			c.state = state
+			util.CopyUint32(machineIDAndState[2:], c.state)
+			c.PutKey(context.TODO(), string(stateKey), string(machineIDAndState))
+			if c.state == StateDie {
+				c.stopCluster()
+			}
+		//状态修改
+		case scc := <-c.StateChangeChan:
+			id := util.BytesToUint16(scc[:2])
+			state := util.BytesToUint32(scc[2:])
+			atomic.StoreUint32(&c.sessionsState[id], state)
+		//加入节点
+		case ssc := <-c.joinSessionChan:
+			m := &member{}
 			m.Session = ssc.ss
-			atomic.StorePointer(&c.sessions[ssc.index], unsafe.Pointer(m))
-			c.occupy[ssc.index] = 0
-			atomic.StoreInt64(&c.sessionsState[ssc.index], ssc.state)
-			c.joinGroup(ssc.name, ssc.index)
-		//改变状态
-		case epc := <-c.eventPutChan:
-			id, name, state := getIDAndStateByString(epc)
-			s := atomic.LoadInt64(&c.sessionsState[id])
-			if s != StateDie {
-				c.sessionsState[id] = state
-				switch state {
-				case StateDie:
-					c.leaverGroup(name, id)
-					c.checkDialClose(id)
-				case StateWork:
-					if temp {
-						c.joinGroup(name, id)
-					}
-					temp = true
-				case StatePause:
-					c.leaverGroup(name, id)
-				default:
+			atomic.StorePointer(&c.sessions[ssc.id], unsafe.Pointer(m))
+		//节点下线
+		case ndc := <-c.NodeDeleteChan:
+			id := getNodeID(ndc)
+			m := atomic.LoadPointer(&c.sessions[id])
+			if m != nil {
+				atomic.StorePointer(&c.sessions[id], nil)
+				atomic.StoreUint32(&c.sessionsState[id], 0)
+			}
+		//改变频道
+		case pcc := <-c.ChangeChannelChan:
+			util.CopyUint16(machineIDAndChanne[:2], pcc[0])
+			util.CopyUint16(machineIDAndChanne[2:], pcc[1])
+			copy(channelKey[lenChannelKey-5:lenChannelKey-3], machineIDAndChanne[2:])
+			copy(channelKey[lenChannelKey-2:], machineIDAndChanne[:2])
+			if pcc[2] == 0 {
+				err = c.PutKey(context.TODO(), string(channelKey), string(machineIDAndChanne))
+				if err != nil {
+					fmt.Println("ERR:", err.Error())
+				}
+			} else {
+				err = c.DeleteKey(context.TODO(), string(channelKey))
+				if err != nil {
+					fmt.Println("ERR:", err.Error())
 				}
 			}
-		//机器下线
-		case edc := <-c.eventDeleteChan:
-			id := getNodeIDByName(string(edc))
-			if c.occupy[id] != 0 {
-				c.occupySum = c.occupySum - c.occupy[id]
-				c.occupy[id] = 0
+		//频道修改
+		case cpc := <-c.ChannelPutChan:
+			id := util.BytesToUint16(cpc[:2])
+			channel := util.BytesToUint16(cpc[2:])
+			v := (*[]uint16)(atomic.LoadPointer(&c.channels[channel]))
+			var channels []uint16
+			if v == nil {
+				channels = make([]uint16, 1)
+				channels[0] = id
+			} else {
+				l := len(*v)
+				channels = make([]uint16, l+1)
+				copy(channels[:l], (*v))
+				channels[l] = id
 			}
-			p := atomic.LoadPointer(&c.sessions[id])
-			if p != nil {
-				key := (*member)(p).name
-				c.leaverGroup(key, id)
-				atomic.StorePointer(&c.sessions[id], nil)
-				atomic.StoreInt64(&c.sessionsState[id], StateDie)
-			}
-		//占用数修改
-		case occ := <-c.occupyChan:
-			c.occupy[occ[0]] += occ[1]
-			c.occupySum += occ[1]
-			if c.occupySum == 0 {
-				c.checkDialClose(occ[0])
+			atomic.StorePointer(&c.channels[channel], unsafe.Pointer(&channels))
+		//频道删除
+		case cdc := <-c.ChannelDeleteChan:
+			channel, id := getChannelID(cdc)
+			v := (*[]uint16)(atomic.LoadPointer(&c.channels[channel]))
+			if v != nil {
+				l := len(*v)
+				channels := make([]uint16, l)
+				for i := 0; i < l; i++ {
+					if (*v)[i] == id {
+						if i < l-1 {
+							copy(channels[i:l-1], (*v)[i+1:])
+						}
+						channels = channels[:l-1]
+						break
+					}
+					channels[i] = (*v)[i]
+				}
+				atomic.StorePointer(&c.channels[channel], unsafe.Pointer(&channels))
 			}
 		//关闭
 		case <-c.stopChan:
 			for id := range c.sessions {
 				m := (*member)(atomic.LoadPointer(&c.sessions[id]))
 				if m != nil {
-					atomic.StorePointer(&c.sessions[id], nil)
 					m.Close()
+					atomic.StorePointer(&c.sessions[id], nil)
 				}
 			}
 			return
@@ -162,53 +220,61 @@ func (c *cluster) Run() {
 	}
 }
 
-func (c *cluster) leaverGroup(name string, id int) {
-	if v, ok := c.groupMap.Load(name); ok {
-		current := v.([]int)
-		l := len(current)
-		newList := make([]int, l)
-		for i := 0; i < l; i++ {
-			if current[i] == id {
-				copy(newList[i:l-1], current[i+1:l])
-				newList = newList[:l-1]
-				break
-			}
-			newList[i] = current[i]
-		}
-		if len(newList) == 0 {
-			c.groupMap.Delete(name)
+//TODO 一致性问题
+func (c *cluster) initStateAndChannels() error {
+	s, err := c.GetKey(context.TODO(), "state/")
+	if err != nil {
+		return err
+	}
+	for i := 0; i < len(s); i++ {
+		id := util.BytesToUint16(s[i][:2])
+		c.sessionsState[id] = util.BytesToUint32(s[i][2:])
+	}
+	cl, err := c.GetKey(context.TODO(), "channel/")
+	if err != nil {
+		return err
+	}
+	temp := make(map[uint16][]uint16, 128)
+	for i := 0; i < len(cl); i++ {
+		id := util.BytesToUint16(cl[i][:2])
+		channel := util.BytesToUint16(cl[i][2:])
+		v, ok := temp[channel]
+		if ok {
+			v = append(v, id)
+			temp[channel] = v
 		} else {
-			c.groupMap.Store(name, newList)
+			tt := make([]uint16, 1)
+			tt[0] = id
+			temp[channel] = tt
 		}
 	}
-}
-func (c *cluster) joinGroup(name string, id int) {
-	//fmt.Println("ddd", name, id, c.occupySum, c.occupy[:5], c.sessionsState[:5], c.sessions[:5])
-	if v, ok := c.groupMap.Load(name); ok {
-		current := v.([]int)
-		current = append(current, id)
-		c.groupMap.Store(name, current)
-
-	} else {
-		l := make([]int, 1, 64)
-		l[0] = id
-		c.groupMap.Store(name, l)
+	for key, value := range temp {
+		c.channels[key] = unsafe.Pointer(&value)
 	}
+	temp = nil
+	return nil
 }
 
-func (c *cluster) checkDialClose(id int) {
-	m := (*member)(atomic.LoadPointer(&c.sessions[id]))
-	if m != nil && c.occupy[id] == 0 && c.sessionsState[id] == StateDie {
-		atomic.StorePointer(&c.sessions[id], nil)
-		m.Close()
-	}
-	//fmt.Println("ddd", c.occupySum, c.occupy[:5], c.sessionsState[:5], c.sessions[:5])
-	if c.occupySum == 0 && c.sessionsState[c.MachineID] == StateDie {
-		c.stopCluster()
-	}
-}
 func (c *cluster) stopCluster() {
 	c.closeOnce.Do(func() {
 		close(c.stopChan)
 	})
+}
+
+/*
+编码
+"machine/xx"	xx 2字节机器id
+"state/xx"		xx 2字节机器id					值： 2字节机器id、4字节状态
+"channel/xx/xx",xx/xx 2字节频道/2字节机器id		值： 2字节机器id、2字节频道
+*/
+
+//getNodeID 转换
+func getNodeID(b []byte) int {
+	return int(util.BytesToUint16(b[len(b)-2:]))
+}
+
+//getChannelID 转换
+func getChannelID(b []byte) (int, uint16) {
+	l := len(b)
+	return int(util.BytesToUint16(b[l-5 : l-3])), util.BytesToUint16(b[l-2:])
 }

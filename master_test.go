@@ -8,14 +8,15 @@ import (
 type testMaster struct {
 }
 
-func (p *testMaster) Run() {}
+func (p *testMaster) Run()   {}
+func (p *testMaster) Ready() {}
 
 func Test_RunAssembly(t *testing.T) {
 	d := NewMaster()
 	app := &testMaster{}
 	d.SetChildCount(1)
 	d.RunAssembly(app)
-	go d.Run()
+	go d.Guard()
 	time.Sleep(5 * time.Second)
 	d.Stop()
 	d.SetChildCount(0)

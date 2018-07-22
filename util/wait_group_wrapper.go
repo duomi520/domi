@@ -30,6 +30,7 @@ const (
 //Runnable 组件
 type Runnable interface {
 	Run()
+	Ready()
 }
 
 //Child 子模块
@@ -47,6 +48,7 @@ func (c *Child) RunAssembly(a Runnable) {
 		c.Done()
 		atomic.AddInt32(&c.childCount, -1)
 	}()
+	a.Ready()
 }
 
 //GetChildCount 取得子模块数

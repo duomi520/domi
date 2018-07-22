@@ -43,8 +43,8 @@ func NewMaster() *Master {
 	return m
 }
 
-//Run 运行
-func (m *Master) Run() {
+//Guard 看守
+func (m *Master) Guard() {
 	m.Logger.Info("Run|程序开始运行")
 	go func() {
 		//等待exitWaitTime秒后，强制关闭。

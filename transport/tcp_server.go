@@ -49,6 +49,10 @@ func NewServerTCP(ctx context.Context, post string, h *Handler, sd *util.Dispatc
 	return s
 }
 
+//Ready 准备好
+func (s *ServerTCP) Ready() {
+}
+
 //Run 运行
 func (s *ServerTCP) Run() {
 	go func() {

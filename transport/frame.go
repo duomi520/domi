@@ -28,14 +28,9 @@ const (
 	FrameType7
 	FrameType8
 	FrameType9
-	FrameType10
 	FrameTypeNodeName
-	FrameTypeReply
-	FrameTypeJoinChannel
-	FrameTypeLeaveChannel
-	FrameTypeBusGetChannels
-	FrameType16
-	FrameType17
+	FrameType11
+	FrameType12
 )
 
 //定义

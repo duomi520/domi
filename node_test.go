@@ -33,9 +33,10 @@ func test4Node() (context.CancelFunc, *Node, *Node, *Node, *Node) {
 //请求-响应（request-reply）1 VS N
 func Test_ReqRep1(t *testing.T) {
 	ctxExitFunc, n1, n2 := test2Node()
-	n2.HandleC(56, testRequest)
+	n2.SerialProcess(56, testRequest)
+	n1.SerialProcess(57, testReply)
 	time.Sleep(500 * time.Millisecond)
-	err := n1.Call(56, n2.sidecar.Name, []byte("Hellow"), testReply)
+	err := n1.Call(56, []byte("Hellow"), 57)
 	if err != nil {
 		t.Error(err.Error())
 	}
@@ -53,79 +54,18 @@ func testReply(ctx *ContextMQ) {
 	fmt.Println(ctx.sidecar.MachineID, " testReply:", string(ctx.Request))
 }
 
-//发布者-订阅者（pubsub publisher-subscriber）1 TO N
-func Test_PubSub1(t *testing.T) {
-	ctxExitFunc, n1, n2, n3, n4 := test4Node()
-	var channel uint16 = 60
-	time.Sleep(1000 * time.Millisecond)
-	u1, err := n1.Subscribe(channel, n1.sidecar.MachineID, testReply)
-	if err != nil {
-		t.Error("s1", err)
-	}
-	u2, err := n2.Subscribe(channel, n1.sidecar.MachineID, testReply)
-	if err != nil {
-		t.Error("s2", err)
-	}
-	u3, err := n3.Subscribe(channel, n1.sidecar.MachineID, testReply)
-	if err != nil {
-		t.Error("s3", err)
-	}
-	u4, err := n4.Subscribe(channel, n1.sidecar.MachineID, testReply)
-	if err != nil {
-		t.Error("s4", err)
-	}
-	time.Sleep(500 * time.Millisecond)
-	n1.Publish(channel, []byte("Broadcast"))
-	time.Sleep(500 * time.Millisecond)
-	if err := n1.Unsubscribe(u1, channel, n1.sidecar.MachineID); err != nil {
-		t.Error("u1", err)
-	}
-	if err := n2.Unsubscribe(u2, channel, n1.sidecar.MachineID); err != nil {
-		t.Error("u2", err)
-	}
-	if err := n3.Unsubscribe(u3, channel, n1.sidecar.MachineID); err != nil {
-		t.Error("u3", err)
-	}
-	if err := n4.Unsubscribe(u4, channel, n1.sidecar.MachineID); err != nil {
-		t.Error("u4", err)
-	}
-	ctxExitFunc()
-	time.Sleep(2000 * time.Millisecond)
-}
-
-func Test_PubSub2(t *testing.T) {
-	ctxExitFunc, n1, n2 := test2Node()
-	var channel uint16 = 61
-	time.Sleep(1000 * time.Millisecond)
-	u1, _ := n2.Subscribe(channel, n1.sidecar.MachineID, testReply)
-	u2, _ := n2.Subscribe(channel, n1.sidecar.MachineID, testReply)
-	u3, _ := n2.Subscribe(channel, n1.sidecar.MachineID, testReply)
-	time.Sleep(500 * time.Millisecond)
-	n1.Publish(channel, []byte("Broadcast1"))
-	time.Sleep(500 * time.Millisecond)
-	n2.Unsubscribe(u1, channel, n1.sidecar.MachineID)
-	n2.Unsubscribe(u3, channel, n1.sidecar.MachineID)
-	time.Sleep(500 * time.Millisecond)
-	n1.Publish(channel, []byte("Broadcast2"))
-	time.Sleep(500 * time.Millisecond)
-	n2.Unsubscribe(u2, channel, n1.sidecar.MachineID)
-	ctxExitFunc()
-	time.Sleep(2000 * time.Millisecond)
-}
-
 //管道（pipeline） ventilator  worker  sink  1 TO 1 TO 1
 
 func Test_Pipeline1(t *testing.T) {
 	ctxExitFunc, n1, n2, n3, n4 := test4Node()
-	var pipe uint16 = 70
-	n2.HandleC(pipe, testWorker)
-	n3.HandleC(pipe, testWorker)
-	n4.HandleC(pipe, testSink)
+	n2.SerialProcess(71, testWorker)
+	n3.SerialProcess(72, testWorker)
+	n4.SerialProcess(73, testSink)
 	time.Sleep(1000 * time.Millisecond)
-	n1.Ventilator(pipe, []string{n2.sidecar.Name, n3.sidecar.Name, n4.sidecar.Name}, []byte("Pipeline "+n1.sidecar.Name))
-	time.Sleep(500 * time.Millisecond)
+	n1.Ventilator([]uint16{71, 72, 73}, []byte("Pipeline "+n1.sidecar.Name))
+	time.Sleep(150 * time.Millisecond)
 	ctxExitFunc()
-	time.Sleep(2000 * time.Millisecond)
+	time.Sleep(1000 * time.Millisecond)
 
 }
 func testWorker(ctx *ContextMQ) {
@@ -140,86 +80,77 @@ func testSink(ctx *ContextMQ) {
 	fmt.Println(ctx.sidecar.Name, " testSink:", string(ctx.Request)+","+ctx.sidecar.Name)
 }
 
+//发布者-订阅者（pubsub publisher-subscriber）1 TO N
+func Test_PubSub1(t *testing.T) {
+	ctxExitFunc, n1, n2, n3, n4 := test4Node()
+	time.Sleep(1000 * time.Millisecond)
+	var channel uint16 = 60
+	n1.SerialProcess(channel, testReply)
+	n2.SerialProcess(channel, testReply)
+	n3.SerialProcess(channel, testReply)
+	n4.SerialProcess(channel, testReply)
+	time.Sleep(150 * time.Millisecond)
+	n1.Publish(channel, []byte("Broadcast"))
+	time.Sleep(150 * time.Millisecond)
+	ctxExitFunc()
+	time.Sleep(1000 * time.Millisecond)
+}
+
+func Test_PubSub2(t *testing.T) {
+	ctxExitFunc, n1, n2 := test2Node()
+	var channel uint16 = 61
+	time.Sleep(1000 * time.Millisecond)
+	n1.SerialProcess(channel, testReply)
+	n2.SerialProcess(channel, testReply)
+	time.Sleep(150 * time.Millisecond)
+	n1.Publish(channel, []byte("Broadcast1"))
+	time.Sleep(150 * time.Millisecond)
+	n2.Unsubscribe(channel)
+	time.Sleep(150 * time.Millisecond)
+	n1.Publish(channel, []byte("Broadcast2"))
+	time.Sleep(150 * time.Millisecond)
+	n1.Unsubscribe(channel)
+	ctxExitFunc()
+	time.Sleep(1000 * time.Millisecond)
+}
+
 //总线（bus） TODO  N VS N
 func Test_Bus1(t *testing.T) {
 	ctxExitFunc, n1, n2, n3, n4 := test4Node()
 	time.Sleep(1000 * time.Millisecond)
 	var bus uint16 = 70
-	u1, err := n1.JoinBus(bus, testReply)
-	if err != nil {
-		t.Error(err)
-	}
-	u2, err := n2.JoinBus(bus, testReply)
-	if err != nil {
-		t.Error(err)
-	}
-	u3, err := n3.JoinBus(bus, testReply)
-	if err != nil {
-		t.Error(err)
-	}
-	u4, err := n4.JoinBus(bus, testReply)
-	if err != nil {
-		t.Error(err)
-	}
-	time.Sleep(500 * time.Millisecond)
-	t.Log(n1.channelNodeMap[70], n2.channelNodeMap[70], n3.channelNodeMap[70], n4.channelNodeMap[70])
-	if err := n1.LeaveBus(bus, u1); err != nil {
-		t.Error(err)
-	}
-	if err := n2.LeaveBus(bus, u2); err != nil {
-		t.Error(err)
-	}
-	if err := n3.LeaveBus(bus, u3); err != nil {
-		t.Error(err)
-	}
-	if err := n4.LeaveBus(bus, u4); err != nil {
-		t.Error(err)
-	}
-	time.Sleep(500 * time.Millisecond)
+	n1.SerialProcess(bus, testReply)
+	n2.SerialProcess(bus, testReply)
+	n3.SerialProcess(bus, testReply)
+	n4.SerialProcess(bus, testReply)
+	time.Sleep(150 * time.Millisecond)
+	n1.Publish(bus, []byte("Broadcast1"))
+	n2.Publish(bus, []byte("Broadcast2"))
+	time.Sleep(100 * time.Millisecond)
 	ctxExitFunc()
-	time.Sleep(2000 * time.Millisecond)
+	time.Sleep(1000 * time.Millisecond)
 }
+
 func Test_Bus2(t *testing.T) {
 	ctxExitFunc, n1, n2, n3, n4 := test4Node()
 	time.Sleep(1000 * time.Millisecond)
 	var bus uint16 = 70
-	u1, err := n1.JoinBus(bus, testReply)
-	if err != nil {
-		t.Error(err)
-	}
-	u2, err := n2.JoinBus(bus, testReply)
-	if err != nil {
-		t.Error(err)
-	}
-	u3, err := n3.JoinBus(bus, testReply)
-	if err != nil {
-		t.Error(err)
-	}
-	u4, err := n4.JoinBus(bus, testReply)
-	if err != nil {
-		t.Error(err)
-	}
-	time.Sleep(500 * time.Millisecond)
+	n1.SerialProcess(bus, testReply)
+	n2.SerialProcess(bus, testReply)
+	n3.SerialProcess(bus, testReply)
+	n4.SerialProcess(bus, testReply)
+	time.Sleep(150 * time.Millisecond)
 	n1.Publish(bus, []byte("speech1"))
-	time.Sleep(500 * time.Millisecond)
-	if err := n1.LeaveBus(bus, u1); err != nil {
-		t.Error(err)
-	}
-	if err := n2.LeaveBus(bus, u2); err != nil {
-		t.Error(err)
-	}
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
+	n1.Unsubscribe(bus)
+	time.Sleep(150 * time.Millisecond)
 	n3.Publish(bus, []byte("speech2"))
-	time.Sleep(500 * time.Millisecond)
-	if err := n3.LeaveBus(bus, u3); err != nil {
-		t.Error(err)
-	}
+	time.Sleep(150 * time.Millisecond)
+	n3.Unsubscribe(bus)
 	n2.Publish(bus, []byte("speech3"))
-	time.Sleep(500 * time.Millisecond)
-	if err := n4.LeaveBus(bus, u4); err != nil {
-		t.Error(err)
-	}
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
+	n4.Unsubscribe(bus)
+	time.Sleep(150 * time.Millisecond)
 	ctxExitFunc()
-	time.Sleep(2000 * time.Millisecond)
+	time.Sleep(1000 * time.Millisecond)
 }

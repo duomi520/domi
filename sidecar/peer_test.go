@@ -10,11 +10,11 @@ import (
 //读取所有key  ./etcdctl get --from-key ''
 /*
 machine/
-{"Name":"0/server","Address":"192.168.3.102","HTTPPort":":7080","TCPPort":":9520","ID":7587831612515088904,"MachineID":0,"State":2}
+{"Name":"0/server","Address":"192.168.1.5","HTTPPort":":7080","TCPPort":":9520","ID":7587831686899188231,"MachineID":0}
 machine/╔
-{"Name":"1/server","Address":"192.168.3.102","HTTPPort":":7080","TCPPort":":9521","ID":7587831612515088913,"MachineID":1,"State":2}
+{"Name":"1/server","Address":"192.168.1.5","HTTPPort":":7080","TCPPort":":9521","ID":7587831686899188240,"MachineID":1}
 machine/╗
-{"Name":"2/server","Address":"192.168.3.102","HTTPPort":":7080","TCPPort":":9522","ID":7587831612515088922,"MachineID":2,"State":2}
+{"Name":"2/server","Address":"192.168.1.5","HTTPPort":":7080","TCPPort":":9522","ID":7587831686899188249,"MachineID":2}
 */
 
 var testEndpoints = []string{"localhost:2379"}

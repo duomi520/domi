@@ -20,14 +20,14 @@ func Test_newSidecar(t *testing.T) {
 	sc3 := NewSidecar(ctx, "3/server", ":7083", ":9523", testEndpoints)
 	go sc3.Run()
 	time.Sleep(150 * time.Millisecond)
-	if sc1.State != 2 || sc2.State != 2 || sc3.State != 2 {
-		t.Fatal("失败:", sc1.State, sc2.State, sc3.State)
+	if sc1.state != 2 || sc2.state != 2 || sc3.state != 2 {
+		t.Fatal("失败:", sc1.state, sc2.state, sc3.state)
 	}
 	ctxExitFunc()
 	time.Sleep(1500 * time.Millisecond)
-	t.Log(sc1.occupySum, sc1.occupy[:5], sc1.sessionsState[:5], sc1.sessions[:5])
-	t.Log(sc2.occupySum, sc2.occupy[:5], sc2.sessionsState[:5], sc2.sessions[:5])
-	t.Log(sc3.occupySum, sc3.occupy[:5], sc3.sessionsState[:5], sc3.sessions[:5])
+	t.Log(sc1.state, sc1.sessionsState[:5], sc1.sessions[:5])
+	t.Log(sc2.state, sc2.sessionsState[:5], sc2.sessions[:5])
+	t.Log(sc3.state, sc3.sessionsState[:5], sc3.sessions[:5])
 	if sc1.Child.GetChildCount() != 0 || sc2.Child.GetChildCount() != 0 || sc3.Child.GetChildCount() != 0 {
 		t.Fatal("失败:", sc1.Child.GetChildCount(), sc2.Child.GetChildCount(), sc3.Child.GetChildCount())
 	}
@@ -44,8 +44,8 @@ func Test_runSidecar3(t *testing.T) {
 	sc3 := NewSidecar(ctx3, "3/server", ":7083", ":9523", testEndpoints)
 	go sc3.Run()
 	time.Sleep(150 * time.Millisecond)
-	if sc1.State != 2 || sc2.State != 2 || sc3.State != 2 {
-		t.Fatal("失败:", sc1.State, sc2.State, sc3.State)
+	if sc1.state != 2 || sc2.state != 2 || sc3.state != 2 {
+		t.Fatal("失败:", sc1.state, sc2.state, sc3.state)
 	}
 	ctxExitFunc1()
 	time.Sleep(600 * time.Millisecond)
@@ -66,8 +66,16 @@ func Test_ask1(t *testing.T) {
 	sc2 := NewSidecar(ctx2, "2/server", ":7082", ":9522", testEndpoints)
 	sc2.HandleFunc(transport.FrameTypePing, testPing)
 	go sc2.Run()
+	var pcc [3]uint16
+	pcc[0] = sc2.machineID
+	pcc[1] = transport.FrameTypePing
+	pcc[2] = 0
+	sc2.ChangeChannelChan <- pcc
 	time.Sleep(150 * time.Millisecond)
-	sc1.AskAppoint(sc2.MachineID, transport.FramePing)
+	err := sc1.AskOne(transport.FrameTypePing, transport.FramePing)
+	if err != nil {
+		t.Fatal(err)
+	}
 	time.Sleep(150 * time.Millisecond)
 	ctxExitFunc1()
 	time.Sleep(600 * time.Millisecond)

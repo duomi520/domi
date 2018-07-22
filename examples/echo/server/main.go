@@ -8,15 +8,16 @@ import (
 
 //定义
 const (
-	FrameTypeMsg uint16 = 50
+	ChannelMsg uint16 = 50
+	ChannelRpl
 )
 
 func main() {
 	app := domi.NewMaster()
 	r := domi.NewNode(app.Ctx, "1/server/", ":7080", ":9500", []string{"localhost:2379"})
-	r.HandleC(FrameTypeMsg, ping)
 	app.RunAssembly(r)
-	app.Run()
+	r.SerialProcess(ChannelMsg, ping)
+	app.Guard()
 }
 func ping(ctx *domi.ContextMQ) {
 	fmt.Println(string(ctx.Request))

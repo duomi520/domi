@@ -3,7 +3,7 @@ package sidecar
 import (
 	"context"
 	"fmt"
-	"strconv"
+	"net/http"
 	"strings"
 	"time"
 
@@ -13,11 +13,18 @@ import (
 
 //Sidecar 边车
 type Sidecar struct {
-	ctx         context.Context
-	Logger      *util.Logger
-	SnowFlakeID *util.SnowFlakeID
+	ctx context.Context
 
-	*Contact
+	dispatcher *util.Dispatcher
+	tcpServer  *transport.ServerTCP
+	httpServer *http.Server
+
+	*cluster
+
+	readyChan chan struct{}
+
+	Logger *util.Logger
+	*transport.Handler
 	util.Child
 }
 
@@ -25,18 +32,45 @@ type Sidecar struct {
 func NewSidecar(ctx context.Context, name, HTTPPort, TCPPort string, operation interface{}) *Sidecar {
 	logger, _ := util.NewLogger(util.DebugLevel, "")
 	s := &Sidecar{
-		ctx:    ctx,
-		Logger: logger,
+		ctx:       ctx,
+		Handler:   transport.NewHandler(),
+		readyChan: make(chan struct{}),
+		Logger:    logger,
 	}
 	var err error
-	s.Contact, err = newContact(ctx, name, HTTPPort, TCPPort, operation)
+	//监视
+	s.cluster, err = newCluster(name, HTTPPort, TCPPort, operation)
 	if err != nil {
-		logger.Fatal("NewSidecar|Contact失败：", err.Error())
+		s.Logger.Error(err)
 		return nil
 	}
-	s.SnowFlakeID = util.NewSnowFlakeID(int64(s.MachineID), SystemCenterStartupTime)
-	logger.SetMark(fmt.Sprintf("Sidecar.%d", s.MachineID))
+	s.dispatcher = util.NewDispatcher("TCP", 256)
+	//tcp支持
+	s.tcpServer = transport.NewServerTCP(ctx, TCPPort, s.Handler, s.dispatcher)
+	if s.tcpServer == nil {
+		s.Logger.Error("NewSidecar|NewServerTCP失败:" + TCPPort)
+		return nil
+	}
+	s.tcpServer.Logger.SetMark(fmt.Sprintf("%d", s.MachineID))
+	s.HandleFunc(transport.FrameTypeNodeName, s.addSessionTCP)
+	//http支持
+	s.httpServer = &http.Server{
+		Addr:           HTTPPort,
+		Handler:        http.DefaultServeMux,
+		ReadTimeout:    10 * time.Second,
+		WriteTimeout:   10 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
+	pre := fmt.Sprintf("/%d", s.ID)
+	http.HandleFunc(pre+"/ping", s.echo)
+	http.HandleFunc(pre+"/exit", s.exit)
+	s.Logger.SetMark(fmt.Sprintf("Sidecar.%d", s.MachineID))
 	return s
+}
+
+//Ready 准备好
+func (s *Sidecar) Ready() {
+	<-s.readyChan
 }
 
 //Run 运行
@@ -60,6 +94,8 @@ func (s *Sidecar) Run() {
 	//与其它服务器建立连接
 	s.dialNode(heartbeatSlice)
 	s.RunAssembly(s.cluster)
+	s.PutStateChan <- StateWork
+	close(s.readyChan)
 	for {
 		select {
 		case <-heartbeat.C:
@@ -76,10 +112,7 @@ func (s *Sidecar) Run() {
 			}
 		case <-s.ctx.Done():
 			s.Logger.Info("Run|等待子模块关闭……")
-			s.State = StateDie
-			if err := s.PutKeyToDistributer(s.Info); err != nil {
-				s.Logger.Error("Run|:", err.Error())
-			}
+			s.PutStateChan <- StateDie
 			s.Wait()
 			s.httpServer.Shutdown(context.TODO())
 			s.dispatcher.Close()
@@ -110,52 +143,40 @@ func (s *Sidecar) dialNode(heartbeatSlice []*transport.ClientTCP) {
 		}
 		cli.Logger.SetMark(fmt.Sprintf("%d", s.MachineID))
 		s.RunAssembly(cli)
-		data := make([]byte, 16+len(s.Name))
-		util.CopyInt64(data[:8], int64(s.MachineID))
-		util.CopyInt64(data[8:16], s.State)
-		copy(data[16:], util.StringToBytes(s.Name))
+		data := make([]byte, 8)
+		util.CopyInt64(data, int64(s.MachineID))
 		fs := transport.NewFrameSlice(transport.FrameTypeNodeName, data, nil)
 		err = cli.Csession.WriteFrameDataToCache(fs)
 		if err != nil {
 			s.Logger.Error("Run|错误：" + err.Error())
 		} else {
-			s.storeSessionChan <- memberMsg{node.MachineID, node.Name, node.State, cli.Csession} //node.State的状态可能不准 TODO
+			s.joinSessionChan <- idSession{node.MachineID, cli.Csession}
 			heartbeatSlice[i] = cli
 		}
 	}
 }
 
-//JoinChannel 加入总线频道  TODO:加分布锁
-func (s *Sidecar) JoinChannel(channel uint16) error {
-	mid := s.SnowFlakeID.GetWorkID()
-	mKey := fmt.Sprintf("channel/%d/%d", channel, mid)
-	mValue := fmt.Sprintf("%d", mid)
-	err := s.PutKey(context.TODO(), mKey, mValue)
-	return err
+//echo Ping 回复 pong
+func (s *Sidecar) echo(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintln(w, "pong")
 }
 
-//LeaveChannel 离开总线频道	TODO:加分布锁
-func (s *Sidecar) LeaveChannel(channel uint16) error {
-	mid := s.SnowFlakeID.GetWorkID()
-	mKey := fmt.Sprintf("channel/%d/%d", channel, mid)
-	err := s.DeleteKey(context.TODO(), mKey)
-	return err
-}
-
-//GetChannels 取
-func (s *Sidecar) GetChannels(channel uint16) ([]int, error) {
-	mKey := fmt.Sprintf("channel/%d/", channel)
-	resp, err := s.GetKey(context.TODO(), mKey)
-	if err != nil {
-		return nil, err
-	}
-	mids := make([]int, len(resp))
-	for n, v := range resp {
-		channel, err := strconv.Atoi(string(v))
-		if err != nil {
-			continue
+//exit 退出  TODO 安全 加认证
+func (s *Sidecar) exit(w http.ResponseWriter, r *http.Request) {
+	s.closeOnce.Do(func() {
+		if s.ctx.Value(util.KeyCtxStopFunc) != nil {
+			s.ctx.Value(util.KeyCtxStopFunc).(func())()
 		}
-		mids[n] = channel
+	})
+	fmt.Fprintln(w, "exit")
+}
+
+//addSessionTCP 用户连接时
+func (s *Sidecar) addSessionTCP(se transport.Session) error {
+	ft := se.GetFrameSlice()
+	id := int(util.BytesToInt64(ft.GetData()[:8]))
+	if s.MachineID != id {
+		s.joinSessionChan <- idSession{id, se}
 	}
-	return mids, nil
+	return nil
 }

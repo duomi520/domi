@@ -13,8 +13,8 @@ import (
 
 //定义
 const (
-	FrameTypeRoom uint16 = 50 + iota
-	FrameTypeMsg
+	ChannelRoom uint16 = 50 + iota
+	ChannelMsg
 )
 
 var homeTemplate = template.Must(template.ParseFiles("home.html"))
@@ -45,7 +45,12 @@ func main() {
 			log.Fatal("ListenAndServe: ", err)
 		}
 	}()
-	app.Run()
+	revChan = make(chan []byte, 1024)
+	conns = make([]*websocket.Conn, 0, 1024)
+	go run()
+	gate.SerialProcess(ChannelRoom, reply)
+	defer gate.Unsubscribe(ChannelRoom)
+	app.Guard()
 	httpServer.Shutdown(context.Background())
 }
 func serveHome(w http.ResponseWriter, r *http.Request) {
@@ -79,13 +84,7 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 		log.Println("Upgrade错误：", err)
 		return
 	}
-	wbr := &wb{conn: conn}
-	sub, err := gate.Subscribe(FrameTypeRoom, 0, wbr.reply)
-	if err != nil {
-		log.Println("err:", err)
-		return
-	}
-	defer gate.Unsubscribe(sub, FrameTypeRoom, 0)
+	conns = append(conns, conn)
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
@@ -94,7 +93,7 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		err = gate.Call(FrameTypeMsg, "1/room/", message, nil)
+		err = gate.Call(ChannelMsg, message, domi.TypeTell)
 		if err != nil {
 			log.Println("err:", err)
 		}
@@ -102,10 +101,22 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func (w *wb) reply(ctx *domi.ContextMQ) {
-	log.Println(w.conn.RemoteAddr(), string(ctx.Request))
-	err := w.conn.WriteMessage(websocket.BinaryMessage, ctx.Request)
-	if err != nil {
-		log.Println("err:", err)
+func reply(ctx *domi.ContextMQ) {
+	revChan <- ctx.Request
+}
+
+var revChan chan []byte
+
+//初步演示，暂不考虑竟态及退出
+var conns []*websocket.Conn
+
+func run() {
+	for {
+		select {
+		case data := <-revChan:
+			for _, v := range conns {
+				v.WriteMessage(websocket.BinaryMessage, data)
+			}
+		}
 	}
 }
