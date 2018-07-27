@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/duomi520/domi"
@@ -15,16 +16,27 @@ import (
 const (
 	ChannelRoom uint16 = 50 + iota
 	ChannelMsg
+	ChannelJoin
+	ChannelLeave
 )
 
 var homeTemplate = template.Must(template.ParseFiles("home.html"))
-
-var gate *domi.Node
+var node *domi.Node
+var gate *gateway
 
 func main() {
 	app := domi.NewMaster()
-	gate = domi.NewNode(app.Ctx, "1/gate/", ":7081", ":9521", []string{"localhost:2379"})
+	gate = &gateway{
+		Ctx:     app.Ctx,
+		connMap: &sync.Map{},
+	}
+	var ctx context.Context
+	ctx, gate.Cancel = context.WithCancel(context.Background())
 	app.RunAssembly(gate)
+	node = domi.NewNode(ctx, app.Stop, "gate V1.0.1", ":7081", ":9521", []string{"localhost:2379"})
+	app.RunAssembly(node)
+	node.SimpleProcess(ChannelRoom, gate.rev)
+	defer node.Unsubscribe(ChannelRoom)
 	httpServer := &http.Server{
 		Addr:           ":8080",
 		Handler:        http.DefaultServeMux,
@@ -45,11 +57,7 @@ func main() {
 			log.Fatal("ListenAndServe: ", err)
 		}
 	}()
-	revChan = make(chan []byte, 1024)
-	conns = make([]*websocket.Conn, 0, 1024)
-	go run()
-	gate.SerialProcess(ChannelRoom, reply)
-	defer gate.Unsubscribe(ChannelRoom)
+
 	app.Guard()
 	httpServer.Shutdown(context.Background())
 }
@@ -66,10 +74,6 @@ func serveHome(w http.ResponseWriter, r *http.Request) {
 	homeTemplate.Execute(w, r.Host)
 }
 
-type wb struct {
-	conn *websocket.Conn
-}
-
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  2048,
 	WriteBufferSize: 2048,
@@ -80,11 +84,16 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 	log.Println(conn.RemoteAddr(), "start")
 	defer log.Println(conn.RemoteAddr(), "exit")
+	gate.Add(1)
+	defer gate.Done()
 	if err != nil {
 		log.Println("Upgrade错误：", err)
 		return
 	}
-	conns = append(conns, conn)
+	gate.connMap.Store(conn.RemoteAddr(), conn)
+	defer gate.connMap.Delete(conn.RemoteAddr())
+	node.Tell(ChannelJoin, nil)
+	defer node.Tell(ChannelLeave, nil)
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
@@ -93,7 +102,7 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		err = gate.Call(ChannelMsg, message, domi.TypeTell)
+		err = node.Tell(ChannelMsg, message)
 		if err != nil {
 			log.Println("err:", err)
 		}
@@ -101,22 +110,27 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func reply(ctx *domi.ContextMQ) {
-	revChan <- ctx.Request
+type gateway struct {
+	Ctx     context.Context
+	Cancel  context.CancelFunc
+	connMap *sync.Map
+	sync.WaitGroup
 }
 
-var revChan chan []byte
+//WaitInit 准备
+func (g *gateway) WaitInit() {}
 
-//初步演示，暂不考虑竟态及退出
-var conns []*websocket.Conn
+//Run 运行
+func (g *gateway) Run() {
+	<-g.Ctx.Done()
+	//外部用户都退出后才能正常关闭
+	gate.Wait()
+	g.Cancel()
+}
 
-func run() {
-	for {
-		select {
-		case data := <-revChan:
-			for _, v := range conns {
-				v.WriteMessage(websocket.BinaryMessage, data)
-			}
-		}
-	}
+func (g *gateway) rev(ctx *domi.ContextMQ) {
+	g.connMap.Range(func(k, v interface{}) bool {
+		v.(*websocket.Conn).WriteMessage(websocket.BinaryMessage, ctx.Request)
+		return true
+	})
 }

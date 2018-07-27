@@ -2,6 +2,7 @@ package sidecar
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -18,35 +19,30 @@ const (
 	StatePause
 )
 
-//AskAppoint 指定请求
-func (c *cluster) AskAppoint(target int, fs *transport.FrameSlice) error {
-	var err error
-	s := atomic.LoadUint32(&c.sessionsState[target])
-	m := (*member)(atomic.LoadPointer(&c.sessions[target]))
-	if m != nil && s == StateWork {
-		err = m.WriteFrameDataPromptly(fs)
-	} else {
-		err = fmt.Errorf("AskAppoint|target %d ： m==nil or state = %d", target, s)
-	}
-	return err
-}
-
 //AskOne 请求某一个
 func (c *cluster) AskOne(channel uint16, fs *transport.FrameSlice) error {
 	var err error
-	v := (*[]uint16)(atomic.LoadPointer(&c.channels[channel]))
-	if v != nil {
-		id := int((*v)[0])
-		s := atomic.LoadUint32(&c.sessionsState[id])
-		m := (*member)(atomic.LoadPointer(&c.sessions[id]))
-		if m != nil && s == StateWork {
-			err = m.WriteFrameDataPromptly(fs)
-		} else {
+	b := (*bucket)(atomic.LoadPointer(&c.channels[channel]))
+	if b != nil {
+		var count uint32
+		for {
+			id, l := b.next()
+			s := atomic.LoadUint32(&c.sessionsState[id])
+			m := (*member)(atomic.LoadPointer(&c.sessions[id]))
+			if m != nil && s == StateWork {
+				err = m.WriteFrameDataPromptly(fs)
+				if err == nil {
+					return err
+				}
+			}
+			count++
+			if count > l {
+				err = fmt.Errorf("AskOne|bucket.sets no find %d,id=%d,l=%d,ERR:%s", channel, id, l, err.Error())
+				break
+			}
 		}
-		//TODO 均衡负载及熔断
 	} else {
-		fmt.Println(c.channels[:6], c.sessionsState[:6], c.sessions[:6])
-		err = fmt.Errorf("Ask|channels no find %d", channel)
+		err = fmt.Errorf("AskOne|bucket no find %d", channel)
 	}
 	return err
 }
@@ -54,22 +50,21 @@ func (c *cluster) AskOne(channel uint16, fs *transport.FrameSlice) error {
 //AskAll 请求所有
 func (c *cluster) AskAll(channel uint16, fs *transport.FrameSlice) error {
 	var err error
-	v := (*[]uint16)(atomic.LoadPointer(&c.channels[channel]))
-	l := len(*v)
-	for i := 0; i < l; i++ {
-		id := int((*v)[i])
-		s := atomic.LoadUint32(&c.sessionsState[id])
-		m := (*member)(atomic.LoadPointer(&c.sessions[id]))
-		if m != nil && s == StateWork {
-			err = m.WriteFrameDataPromptly(fs)
+	b := (*bucket)(atomic.LoadPointer(&c.channels[channel]))
+	if b != nil {
+		l := len(b.sets)
+		for i := 0; i < l; i++ {
+			id := b.sets[i]
+			s := atomic.LoadUint32(&c.sessionsState[id])
+			m := (*member)(atomic.LoadPointer(&c.sessions[id]))
+			if m != nil && s == StateWork {
+				err = m.WriteFrameDataPromptly(fs) //只记录最后一个错误
+			}
 		}
+	} else {
+		err = fmt.Errorf("AskAll|bucket no find %d", channel)
 	}
 	return err
-}
-
-type idSession struct {
-	id int
-	ss transport.Session
 }
 
 type member struct {
@@ -79,29 +74,25 @@ type member struct {
 type cluster struct {
 	sessions      [1024]unsafe.Pointer  //*member	原子操作
 	sessionsState [1024]uint32          //状态		原子操作
-	channels      [65536]unsafe.Pointer //*[]uint16	原子操作
+	channels      [65536]unsafe.Pointer //*bucket	原子操作
 
 	state     uint32 //状态
 	machineID uint16
 
-	joinSessionChan   chan idSession //加入会话信号
-	PutStateChan      chan uint32
-	ChangeChannelChan chan [3]uint16 //id,channel,0 put,1 del
-	stopChan          chan struct{}
-	readyChan         chan struct{}
+	stopChan  chan struct{}
+	readyChan chan struct{}
 
 	*Peer
-	closeOnce sync.Once
+	Logger *util.Logger
+	cOnce  sync.Once
 }
 
-func newCluster(name, HTTPPort, TCPPort string, operation interface{}) (*cluster, error) {
+func newCluster(name, HTTPPort, TCPPort string, operation interface{}, logger *util.Logger) (*cluster, error) {
 	var err error
 	c := &cluster{
-		joinSessionChan:   make(chan idSession, 64),
-		PutStateChan:      make(chan uint32, 64),
-		ChangeChannelChan: make(chan [3]uint16, 1024),
-		stopChan:          make(chan struct{}),
-		readyChan:         make(chan struct{}),
+		stopChan:  make(chan struct{}),
+		readyChan: make(chan struct{}),
+		Logger:    logger,
 	}
 	c.Peer, err = newPeer(name, HTTPPort, TCPPort, operation)
 	if err != nil {
@@ -110,101 +101,99 @@ func newCluster(name, HTTPPort, TCPPort string, operation interface{}) (*cluster
 	c.machineID = uint16(c.MachineID)
 	return c, nil
 }
-func (c *cluster) Ready() {
+func (c *cluster) WaitInit() {
 	<-c.readyChan
 }
 func (c *cluster) Run() {
-	machineIDAndState := make([]byte, 6)
-	util.CopyUint16(machineIDAndState[:2], c.machineID)
+	//xx machineID xxxx State xx 流转控制
+	stateValue := make([]byte, 8)
+	util.CopyUint16(stateValue[:2], c.machineID)
 	stateKey := []byte("state/xx")
-	util.CopyUint16(stateKey[len(stateKey)-2:], c.machineID)
-	machineIDAndChanne := make([]byte, 4)
+	util.CopyUint16(stateKey[len(stateKey)-2:len(stateKey)], c.machineID)
+	//Value: xx machineID xx channel xx 流转控制
+	channelValue := make([]byte, 4)
+	//Key:	xx 2字节频道 /xx 2字节机器id
 	channelKey := []byte("channel/xx/xx")
 	lenChannelKey := len(channelKey)
 	err := c.initStateAndChannels()
 	close(c.readyChan)
 	if err != nil {
+		c.Logger.Fatal("Run|", err.Error())
 		return
 	}
 	for {
 		select {
-		//put状态
-		case state := <-c.PutStateChan:
-			c.state = state
-			util.CopyUint32(machineIDAndState[2:], c.state)
-			c.PutKey(context.TODO(), string(stateKey), string(machineIDAndState))
-			if c.state == StateDie {
-				c.stopCluster()
-			}
-		//状态修改
-		case scc := <-c.StateChangeChan:
-			id := util.BytesToUint16(scc[:2])
-			state := util.BytesToUint32(scc[2:])
-			atomic.StoreUint32(&c.sessionsState[id], state)
-		//加入节点
-		case ssc := <-c.joinSessionChan:
-			m := &member{}
-			m.Session = ssc.ss
-			atomic.StorePointer(&c.sessions[ssc.id], unsafe.Pointer(m))
-		//节点下线
-		case ndc := <-c.NodeDeleteChan:
-			id := getNodeID(ndc)
-			m := atomic.LoadPointer(&c.sessions[id])
-			if m != nil {
-				atomic.StorePointer(&c.sessions[id], nil)
-				atomic.StoreUint32(&c.sessionsState[id], 0)
-			}
-		//改变频道
-		case pcc := <-c.ChangeChannelChan:
-			util.CopyUint16(machineIDAndChanne[:2], pcc[0])
-			util.CopyUint16(machineIDAndChanne[2:], pcc[1])
-			copy(channelKey[lenChannelKey-5:lenChannelKey-3], machineIDAndChanne[2:])
-			copy(channelKey[lenChannelKey-2:], machineIDAndChanne[:2])
-			if pcc[2] == 0 {
-				err = c.PutKey(context.TODO(), string(channelKey), string(machineIDAndChanne))
-				if err != nil {
-					fmt.Println("ERR:", err.Error())
+		//频道
+		case cc := <-c.ChannelChan:
+			switch cc.operation {
+			case 1: //频道修改
+				v := (*bucket)(atomic.LoadPointer(&c.channels[cc.channel]))
+				nb := newBucket()
+				if v == nil {
+					nb.sets = append(nb.sets, cc.id)
+					nb.cursorAndLenght = setCursorAndLenght(0, 1)
+				} else {
+					nb.add(v.sets, cc.id)
 				}
-			} else {
-				err = c.DeleteKey(context.TODO(), string(channelKey))
-				if err != nil {
-					fmt.Println("ERR:", err.Error())
-				}
-			}
-		//频道修改
-		case cpc := <-c.ChannelPutChan:
-			id := util.BytesToUint16(cpc[:2])
-			channel := util.BytesToUint16(cpc[2:])
-			v := (*[]uint16)(atomic.LoadPointer(&c.channels[channel]))
-			var channels []uint16
-			if v == nil {
-				channels = make([]uint16, 1)
-				channels[0] = id
-			} else {
-				l := len(*v)
-				channels = make([]uint16, l+1)
-				copy(channels[:l], (*v))
-				channels[l] = id
-			}
-			atomic.StorePointer(&c.channels[channel], unsafe.Pointer(&channels))
-		//频道删除
-		case cdc := <-c.ChannelDeleteChan:
-			channel, id := getChannelID(cdc)
-			v := (*[]uint16)(atomic.LoadPointer(&c.channels[channel]))
-			if v != nil {
-				l := len(*v)
-				channels := make([]uint16, l)
-				for i := 0; i < l; i++ {
-					if (*v)[i] == id {
-						if i < l-1 {
-							copy(channels[i:l-1], (*v)[i+1:])
-						}
-						channels = channels[:l-1]
-						break
+				atomic.StorePointer(&c.channels[cc.channel], unsafe.Pointer(nb))
+			case 2: //频道删除
+				v := (*bucket)(atomic.LoadPointer(&c.channels[cc.channel]))
+				if v != nil {
+					nb := newBucket()
+					nb.remove(v.sets, cc.id)
+					if nb.cursorAndLenght != 0 {
+						atomic.StorePointer(&c.channels[cc.channel], unsafe.Pointer(nb))
+					} else {
+						atomic.StorePointer(&c.channels[cc.channel], nil)
 					}
-					channels[i] = (*v)[i]
 				}
-				atomic.StorePointer(&c.channels[channel], unsafe.Pointer(&channels))
+			case 3: //PUT
+				util.CopyUint16(channelValue[:2], cc.id)
+				util.CopyUint16(channelValue[2:4], cc.channel)
+				copy(channelKey[lenChannelKey-5:lenChannelKey-3], channelValue[2:4])
+				copy(channelKey[lenChannelKey-2:], channelValue[:2])
+				if err = c.PutKey(context.TODO(), string(channelKey), string(channelValue)); err != nil {
+					c.Logger.Error("Run|", err.Error())
+				}
+
+			case 4: //Delete
+				util.CopyUint16(channelValue[:2], cc.id)
+				util.CopyUint16(channelValue[2:4], cc.channel)
+				copy(channelKey[lenChannelKey-5:lenChannelKey-3], channelValue[2:4])
+				copy(channelKey[lenChannelKey-2:], channelValue[:2])
+				if err = c.DeleteKey(context.TODO(), string(channelKey)); err != nil {
+					c.Logger.Error("Run|", err.Error())
+				}
+			}
+
+		//状态
+		case sc := <-c.StateChan:
+			switch sc.operation {
+			case 1:
+				atomic.StoreUint32(&c.sessionsState[sc.id], sc.state)
+			case 3: //PUT
+				if c.state != StateDie {
+					c.state = sc.state
+					util.CopyUint32(stateValue[2:6], c.state)
+					c.PutKey(context.TODO(), string(stateKey), string(stateValue))
+					if sc.state == StateDie {
+						c.stopCluster()
+					}
+				}
+			}
+		//节点
+		case nc := <-c.NodeChan:
+			switch nc.operation {
+			case 2: //下线
+				m := atomic.LoadPointer(&c.sessions[nc.id])
+				if m != nil {
+					atomic.StorePointer(&c.sessions[nc.id], nil)
+				}
+				atomic.StoreUint32(&c.sessionsState[nc.id], 0)
+			case 3: //连接
+				m := &member{}
+				m.Session = nc.ss
+				atomic.StorePointer(&c.sessions[nc.id], unsafe.Pointer(m))
 			}
 		//关闭
 		case <-c.stopChan:
@@ -215,12 +204,13 @@ func (c *cluster) Run() {
 					atomic.StorePointer(&c.sessions[id], nil)
 				}
 			}
+			c.Logger.Info("Run|cluster关闭。")
 			return
 		}
 	}
 }
 
-//TODO 一致性问题
+//
 func (c *cluster) initStateAndChannels() error {
 	s, err := c.GetKey(context.TODO(), "state/")
 	if err != nil {
@@ -228,53 +218,180 @@ func (c *cluster) initStateAndChannels() error {
 	}
 	for i := 0; i < len(s); i++ {
 		id := util.BytesToUint16(s[i][:2])
-		c.sessionsState[id] = util.BytesToUint32(s[i][2:])
+		c.sessionsState[id] = util.BytesToUint32(s[i][2:6])
 	}
 	cl, err := c.GetKey(context.TODO(), "channel/")
 	if err != nil {
 		return err
 	}
-	temp := make(map[uint16][]uint16, 128)
+	temp := make(map[uint16]*bucket, 128)
 	for i := 0; i < len(cl); i++ {
 		id := util.BytesToUint16(cl[i][:2])
 		channel := util.BytesToUint16(cl[i][2:])
 		v, ok := temp[channel]
 		if ok {
-			v = append(v, id)
-			temp[channel] = v
+			v.sets = append(v.sets, id)
+			v.cursorAndLenght = setCursorAndLenght(0, uint32(len(v.sets)))
 		} else {
-			tt := make([]uint16, 1)
-			tt[0] = id
-			temp[channel] = tt
+			nb := newBucket()
+			nb.sets = append(nb.sets, id)
+			nb.cursorAndLenght = setCursorAndLenght(0, 1)
+			temp[channel] = nb
 		}
 	}
+	for {
+		select {
+		case <-c.StateChan:
+			return errors.New("initStateAndChannels|StateChan 检测到不同步。")
+		default:
+			goto end1
+		}
+	}
+end1:
+	for {
+		select {
+		case <-c.ChannelChan:
+			return errors.New("initStateAndChannels|ChannelChan 检测到不同步。")
+		default:
+			goto end2
+		}
+	}
+end2:
 	for key, value := range temp {
-		c.channels[key] = unsafe.Pointer(&value)
+		c.channels[key] = unsafe.Pointer(value)
 	}
 	temp = nil
 	return nil
 }
 
 func (c *cluster) stopCluster() {
-	c.closeOnce.Do(func() {
+	c.cOnce.Do(func() {
 		close(c.stopChan)
 	})
 }
 
 /*
 编码
-"machine/xx"	xx 2字节机器id
-"state/xx"		xx 2字节机器id					值： 2字节机器id、4字节状态
-"channel/xx/xx",xx/xx 2字节频道/2字节机器id		值： 2字节机器id、2字节频道
+key: "machine/xx"	xx 2字节机器id
+key: "state/xx"		xx 2字节机器id						值： 2字节机器id、4字节状态
+key: "channel/xx/xx",xx/xx 2字节频道/2字节机器id		值： 2字节机器id、2字节频道
 */
 
-//getNodeID 转换
-func getNodeID(b []byte) int {
-	return int(util.BytesToUint16(b[len(b)-2:]))
+type stateMsg struct {
+	id        uint16
+	state     uint32
+	operation uint16
 }
 
-//getChannelID 转换
-func getChannelID(b []byte) (int, uint16) {
+func bytesTOStateMsg(b []byte) stateMsg {
+	var sm stateMsg
+	sm.id = util.BytesToUint16(b[:2])
+	sm.state = util.BytesToUint32(b[2:6])
+	return sm
+}
+
+//SetState 设置状态
+func (c *cluster) SetState(s uint32) {
+	var sm stateMsg
+	sm.state = s
+	sm.operation = 3
+	c.StateChan <- sm
+}
+
+//GetState 读取状态
+func (c *cluster) GetState() uint32 {
+	return c.state
+}
+
+type nodeMsg struct {
+	id        uint16
+	ss        transport.Session
+	operation uint16
+}
+
+func getNodeID(b []byte) uint16 {
+	return util.BytesToUint16(b[len(b)-2:])
+}
+
+type channelMsg struct {
+	id, channel, operation uint16
+}
+
+func keyTOChannelMsg(b []byte) channelMsg {
+	var cm channelMsg
 	l := len(b)
-	return int(util.BytesToUint16(b[l-5 : l-3])), util.BytesToUint16(b[l-2:])
+	cm.channel = util.BytesToUint16(b[l-5 : l-3])
+	cm.id = util.BytesToUint16(b[l-2 : l])
+	return cm
+}
+
+func valueTOChannelMsg(b []byte) channelMsg {
+	var cm channelMsg
+	cm.id = util.BytesToUint16(b[:2])
+	cm.channel = util.BytesToUint16(b[2:4])
+	return cm
+}
+
+//SetChannel 设置频道
+func (c *cluster) SetChannel(id, channel, operation uint16) {
+	var cm channelMsg
+	cm.id = id
+	cm.channel = channel
+	cm.operation = operation
+	c.ChannelChan <- cm
+}
+
+type bucket struct {
+	cursorAndLenght uint64
+	sets            []uint16
+}
+
+func setCursorAndLenght(cursor, lenght uint32) uint64 {
+	return (uint64(lenght) << 32) | uint64(cursor)
+}
+
+func getCursorAndLenght(d uint64) (uint32, uint32) {
+	return uint32(d), uint32(uint64(d) >> 32)
+}
+
+func newBucket() *bucket {
+	nb := &bucket{
+		cursorAndLenght: 0,
+		sets:            make([]uint16, 0, 64),
+	}
+	return nb
+}
+
+func (b *bucket) add(base []uint16, id uint16) {
+	b.sets = append(b.sets, base...)
+	b.sets = append(b.sets, id)
+	b.cursorAndLenght = setCursorAndLenght(0, uint32(len(b.sets)))
+}
+
+//TODO 优化性能
+func (b *bucket) remove(base []uint16, id uint16) {
+	l := len(base)
+	b.sets = append(b.sets, base...)
+	for i := 0; i < l; i++ {
+		if base[i] == id {
+			if i < l-1 {
+				copy(b.sets[i:l-1], b.sets[i+1:])
+			}
+			b.sets = b.sets[:l-1]
+			break
+		}
+	}
+	b.cursorAndLenght = setCursorAndLenght(0, uint32(len(b.sets)))
+}
+
+func (b *bucket) next() (uint16, uint32) {
+	d := atomic.AddUint64(&b.cursorAndLenght, 1)
+	cursor, lenght := getCursorAndLenght(d)
+	//很可能0被多次分配，不影响。
+	if cursor >= lenght {
+		cursor = 0
+		d = setCursorAndLenght(cursor, lenght)
+		atomic.StoreUint64(&b.cursorAndLenght, d)
+	}
+	return b.sets[cursor], lenght
 }

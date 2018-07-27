@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/duomi520/domi/transport"
@@ -13,7 +14,8 @@ import (
 
 //Sidecar 边车
 type Sidecar struct {
-	ctx context.Context
+	ctx      context.Context
+	exitFunc func()
 
 	dispatcher *util.Dispatcher
 	tcpServer  *transport.ServerTCP
@@ -23,23 +25,26 @@ type Sidecar struct {
 
 	readyChan chan struct{}
 
+	sOnce sync.Once
+
 	Logger *util.Logger
 	*transport.Handler
 	util.Child
 }
 
 //NewSidecar 新建
-func NewSidecar(ctx context.Context, name, HTTPPort, TCPPort string, operation interface{}) *Sidecar {
+func NewSidecar(ctx context.Context, cancel func(), name, HTTPPort, TCPPort string, operation interface{}) *Sidecar {
 	logger, _ := util.NewLogger(util.DebugLevel, "")
 	s := &Sidecar{
 		ctx:       ctx,
+		exitFunc:  cancel,
 		Handler:   transport.NewHandler(),
 		readyChan: make(chan struct{}),
 		Logger:    logger,
 	}
 	var err error
 	//监视
-	s.cluster, err = newCluster(name, HTTPPort, TCPPort, operation)
+	s.cluster, err = newCluster(name, HTTPPort, TCPPort, operation, logger)
 	if err != nil {
 		s.Logger.Error(err)
 		return nil
@@ -68,14 +73,14 @@ func NewSidecar(ctx context.Context, name, HTTPPort, TCPPort string, operation i
 	return s
 }
 
-//Ready 准备好
-func (s *Sidecar) Ready() {
+//WaitInit 准备好
+func (s *Sidecar) WaitInit() {
 	<-s.readyChan
 }
 
 //Run 运行
 func (s *Sidecar) Run() {
-	s.Logger.Info(fmt.Sprintf("Run|%d启动……", s.ID))
+	s.Logger.Info(fmt.Sprintf("Run|%d 启动……", s.ID))
 	//启动心跳
 	heartbeatSlice := make([]*transport.ClientTCP, len(s.GetInitAddress()))
 	heartbeat := time.NewTicker(transport.DefaultHeartbeatDuration)
@@ -94,7 +99,7 @@ func (s *Sidecar) Run() {
 	//与其它服务器建立连接
 	s.dialNode(heartbeatSlice)
 	s.RunAssembly(s.cluster)
-	s.PutStateChan <- StateWork
+	s.SetState(StateWork)
 	close(s.readyChan)
 	for {
 		select {
@@ -112,7 +117,7 @@ func (s *Sidecar) Run() {
 			}
 		case <-s.ctx.Done():
 			s.Logger.Info("Run|等待子模块关闭……")
-			s.PutStateChan <- StateDie
+			s.SetState(StateDie)
 			s.Wait()
 			s.httpServer.Shutdown(context.TODO())
 			s.dispatcher.Close()
@@ -136,21 +141,23 @@ func (s *Sidecar) getURLTCP(u Info) string {
 
 //dialNode 与其它服务器建立连接
 func (s *Sidecar) dialNode(heartbeatSlice []*transport.ClientTCP) {
+	data := make([]byte, 2)
+	fs := transport.NewFrameSlice(transport.FrameTypeNodeName, data, nil)
 	for i, node := range s.GetInitAddress() {
 		cli, err := transport.NewClientTCP(s.ctx, s.getURLTCP(node), s.Handler, s.dispatcher)
 		if err != nil {
 			s.Logger.Error("Run|错误：" + err.Error())
+			continue
 		}
 		cli.Logger.SetMark(fmt.Sprintf("%d", s.MachineID))
 		s.RunAssembly(cli)
-		data := make([]byte, 8)
-		util.CopyInt64(data, int64(s.MachineID))
-		fs := transport.NewFrameSlice(transport.FrameTypeNodeName, data, nil)
+		util.CopyUint16(fs.GetData(), s.machineID)
 		err = cli.Csession.WriteFrameDataToCache(fs)
 		if err != nil {
 			s.Logger.Error("Run|错误：" + err.Error())
+			continue
 		} else {
-			s.joinSessionChan <- idSession{node.MachineID, cli.Csession}
+			s.NodeChan <- nodeMsg{id: uint16(node.MachineID), ss: cli.Csession, operation: 3}
 			heartbeatSlice[i] = cli
 		}
 	}
@@ -163,20 +170,18 @@ func (s *Sidecar) echo(w http.ResponseWriter, r *http.Request) {
 
 //exit 退出  TODO 安全 加认证
 func (s *Sidecar) exit(w http.ResponseWriter, r *http.Request) {
-	s.closeOnce.Do(func() {
-		if s.ctx.Value(util.KeyCtxStopFunc) != nil {
-			s.ctx.Value(util.KeyCtxStopFunc).(func())()
-		}
-	})
 	fmt.Fprintln(w, "exit")
+	s.sOnce.Do(func() {
+		s.exitFunc()
+	})
 }
 
 //addSessionTCP 用户连接时
 func (s *Sidecar) addSessionTCP(se transport.Session) error {
 	ft := se.GetFrameSlice()
-	id := int(util.BytesToInt64(ft.GetData()[:8]))
-	if s.MachineID != id {
-		s.joinSessionChan <- idSession{id, se}
+	id := util.BytesToUint16(ft.GetData())
+	if s.machineID != id {
+		s.NodeChan <- nodeMsg{id: id, ss: se, operation: 3}
 	}
 	return nil
 }

@@ -1,6 +1,7 @@
 package domi
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"testing"
@@ -11,30 +12,36 @@ var testEndpoints = []string{"localhost:2379"}
 
 func test2Node() (context.CancelFunc, *Node, *Node) {
 	ctx, ctxExitFunc := context.WithCancel(context.Background())
-	n1 := NewNode(ctx, "1/server/", ":7081", ":9521", testEndpoints)
+	n1 := NewNode(ctx, nil, "1/server/", ":7081", ":9521", testEndpoints)
 	go n1.Run()
-	n2 := NewNode(ctx, "2/server/", ":7082", ":9522", testEndpoints)
+	n1.WaitInit()
+	n2 := NewNode(ctx, nil, "2/server/", ":7082", ":9522", testEndpoints)
 	go n2.Run()
+	n2.WaitInit()
 	return ctxExitFunc, n1, n2
 }
 func test4Node() (context.CancelFunc, *Node, *Node, *Node, *Node) {
 	ctx, ctxExitFunc := context.WithCancel(context.Background())
-	n1 := NewNode(ctx, "1/server/", ":7081", ":9521", testEndpoints)
+	n1 := NewNode(ctx, nil, "1/server/", ":7081", ":9521", testEndpoints)
 	go n1.Run()
-	n2 := NewNode(ctx, "2/server/", ":7082", ":9522", testEndpoints)
+	n1.WaitInit()
+	n2 := NewNode(ctx, nil, "2/server/", ":7082", ":9522", testEndpoints)
 	go n2.Run()
-	n3 := NewNode(ctx, "3/server/", ":7083", ":9523", testEndpoints)
+	n2.WaitInit()
+	n3 := NewNode(ctx, nil, "3/server/", ":7083", ":9523", testEndpoints)
 	go n3.Run()
-	n4 := NewNode(ctx, "4/server/", ":7084", ":9524", testEndpoints)
+	n3.WaitInit()
+	n4 := NewNode(ctx, nil, "4/server/", ":7084", ":9524", testEndpoints)
 	go n4.Run()
+	n4.WaitInit()
 	return ctxExitFunc, n1, n2, n3, n4
 }
 
 //请求-响应（request-reply）1 VS N
 func Test_ReqRep1(t *testing.T) {
 	ctxExitFunc, n1, n2 := test2Node()
-	n2.SerialProcess(56, testRequest)
-	n1.SerialProcess(57, testReply)
+	n2.SimpleProcess(56, testRequest)
+	n1.SimpleProcess(57, testReply)
 	time.Sleep(500 * time.Millisecond)
 	err := n1.Call(56, []byte("Hellow"), 57)
 	if err != nil {
@@ -58,14 +65,14 @@ func testReply(ctx *ContextMQ) {
 
 func Test_Pipeline1(t *testing.T) {
 	ctxExitFunc, n1, n2, n3, n4 := test4Node()
-	n2.SerialProcess(71, testWorker)
-	n3.SerialProcess(72, testWorker)
-	n4.SerialProcess(73, testSink)
+	n2.SimpleProcess(71, testWorker)
+	n3.SimpleProcess(72, testWorker)
+	n4.SimpleProcess(73, testSink)
 	time.Sleep(1000 * time.Millisecond)
 	n1.Ventilator([]uint16{71, 72, 73}, []byte("Pipeline "+n1.sidecar.Name))
 	time.Sleep(150 * time.Millisecond)
 	ctxExitFunc()
-	time.Sleep(1000 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 
 }
 func testWorker(ctx *ContextMQ) {
@@ -85,23 +92,23 @@ func Test_PubSub1(t *testing.T) {
 	ctxExitFunc, n1, n2, n3, n4 := test4Node()
 	time.Sleep(1000 * time.Millisecond)
 	var channel uint16 = 60
-	n1.SerialProcess(channel, testReply)
-	n2.SerialProcess(channel, testReply)
-	n3.SerialProcess(channel, testReply)
-	n4.SerialProcess(channel, testReply)
+	n1.SimpleProcess(channel, testReply)
+	n2.SimpleProcess(channel, testReply)
+	n3.SimpleProcess(channel, testReply)
+	n4.SimpleProcess(channel, testReply)
 	time.Sleep(150 * time.Millisecond)
 	n1.Publish(channel, []byte("Broadcast"))
 	time.Sleep(150 * time.Millisecond)
 	ctxExitFunc()
-	time.Sleep(1000 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 }
 
 func Test_PubSub2(t *testing.T) {
 	ctxExitFunc, n1, n2 := test2Node()
 	var channel uint16 = 61
 	time.Sleep(1000 * time.Millisecond)
-	n1.SerialProcess(channel, testReply)
-	n2.SerialProcess(channel, testReply)
+	n1.SimpleProcess(channel, testReply)
+	n2.SimpleProcess(channel, testReply)
 	time.Sleep(150 * time.Millisecond)
 	n1.Publish(channel, []byte("Broadcast1"))
 	time.Sleep(150 * time.Millisecond)
@@ -109,36 +116,35 @@ func Test_PubSub2(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	n1.Publish(channel, []byte("Broadcast2"))
 	time.Sleep(150 * time.Millisecond)
-	n1.Unsubscribe(channel)
 	ctxExitFunc()
-	time.Sleep(1000 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 }
 
-//总线（bus） TODO  N VS N
+//总线（bus）   N VS N
 func Test_Bus1(t *testing.T) {
 	ctxExitFunc, n1, n2, n3, n4 := test4Node()
 	time.Sleep(1000 * time.Millisecond)
 	var bus uint16 = 70
-	n1.SerialProcess(bus, testReply)
-	n2.SerialProcess(bus, testReply)
-	n3.SerialProcess(bus, testReply)
-	n4.SerialProcess(bus, testReply)
+	n1.SimpleProcess(bus, testReply)
+	n2.SimpleProcess(bus, testReply)
+	n3.SimpleProcess(bus, testReply)
+	n4.SimpleProcess(bus, testReply)
 	time.Sleep(150 * time.Millisecond)
 	n1.Publish(bus, []byte("Broadcast1"))
 	n2.Publish(bus, []byte("Broadcast2"))
 	time.Sleep(100 * time.Millisecond)
 	ctxExitFunc()
-	time.Sleep(1000 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 }
 
 func Test_Bus2(t *testing.T) {
 	ctxExitFunc, n1, n2, n3, n4 := test4Node()
 	time.Sleep(1000 * time.Millisecond)
 	var bus uint16 = 70
-	n1.SerialProcess(bus, testReply)
-	n2.SerialProcess(bus, testReply)
-	n3.SerialProcess(bus, testReply)
-	n4.SerialProcess(bus, testReply)
+	n1.SimpleProcess(bus, testReply)
+	n2.SimpleProcess(bus, testReply)
+	n3.SimpleProcess(bus, testReply)
+	n4.SimpleProcess(bus, testReply)
 	time.Sleep(150 * time.Millisecond)
 	n1.Publish(bus, []byte("speech1"))
 	time.Sleep(150 * time.Millisecond)
@@ -147,10 +153,29 @@ func Test_Bus2(t *testing.T) {
 	n3.Publish(bus, []byte("speech2"))
 	time.Sleep(150 * time.Millisecond)
 	n3.Unsubscribe(bus)
+	time.Sleep(150 * time.Millisecond)
 	n2.Publish(bus, []byte("speech3"))
 	time.Sleep(150 * time.Millisecond)
 	n4.Unsubscribe(bus)
 	time.Sleep(150 * time.Millisecond)
 	ctxExitFunc()
-	time.Sleep(1000 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
+}
+
+func Test_WatchChannel(t *testing.T) {
+	ctxExitFunc, n1, n2 := test2Node()
+	cc := make(chan []byte)
+	n2.WatchChannel(80, cc)
+	time.Sleep(500 * time.Millisecond)
+	err := n1.Tell(80, []byte("Hellow"))
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	data := <-cc
+	if !bytes.Equal([]byte("Hellow"), data) {
+		t.Error("ERR:", data)
+	}
+	time.Sleep(150 * time.Millisecond)
+	ctxExitFunc()
+	time.Sleep(1500 * time.Millisecond)
 }

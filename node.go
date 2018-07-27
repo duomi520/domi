@@ -2,37 +2,29 @@ package domi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
+	"unsafe"
 
 	"github.com/duomi520/domi/sidecar"
 	"github.com/duomi520/domi/transport"
 	"github.com/duomi520/domi/util"
 )
 
-//TypeTell 不回复
-const TypeTell uint16 = 65535
-
 //Node 节点
 type Node struct {
-	sidecar    *sidecar.Sidecar
-	serverFunc [65536]interface{} //key:uint16  	value:func(*ContextMQ)
-	Logger     *util.Logger
+	sidecar *sidecar.Sidecar
+	Logger  *util.Logger
 }
 
-//NewNode 新建
-func NewNode(ctx context.Context, name, HTTPPort, TCPPort string, endpoints []string) *Node {
+//NewNode 新建，cancel为服务的关闭函数。
+func NewNode(ctx context.Context, cancel func(), name, HTTPPort, TCPPort string, endpoints []string) *Node {
 	n := &Node{}
-	n.sidecar = sidecar.NewSidecar(ctx, name, HTTPPort, TCPPort, endpoints)
+	n.sidecar = sidecar.NewSidecar(ctx, cancel, name, HTTPPort, TCPPort, endpoints)
 	n.Logger = n.sidecar.Logger
 	n.Logger.SetLevel(util.ErrorLevel)
 	return n
-}
-
-//Close g
-func (n *Node) Close() {
 }
 
 //Run 运行
@@ -40,81 +32,110 @@ func (n *Node) Run() {
 	n.sidecar.Run()
 }
 
-//Ready 准备好
-func (n *Node) Ready() {
-	n.sidecar.Ready()
+//WaitInit 阻塞，等待Run初始化完成
+func (n *Node) WaitInit() {
+	n.sidecar.WaitInit()
 	time.Sleep(10 * time.Millisecond)
 }
 
-//SerialProcess 单频道处理
-func (n *Node) SerialProcess(channel uint16, f func(*ContextMQ)) {
-	var idAndChannel [3]uint16
-	idAndChannel[0] = uint16(n.sidecar.MachineID)
-	idAndChannel[1] = channel
-	idAndChannel[2] = 0
-	n.sidecar.ChangeChannelChan <- idAndChannel
-	n.serverFunc[channel] = f
-	n.sidecar.HandleFunc(channel, n.handleWrapper)
+//Pause 使服务暂停
+func (n *Node) Pause() {
+	n.sidecar.SetState(sidecar.StatePause)
 }
 
-func (n *Node) handleWrapper(s transport.Session) error {
-	ft := s.GetFrameSlice().GetFrameType()
-	v := n.serverFunc[ft]
-	if v == nil {
-		n.Logger.Warn("handleWrapper|serverFunc找不到:", ft)
-		return nil
+//Work 使服务工作
+func (n *Node) Work() {
+	n.sidecar.SetState(sidecar.StateWork)
+}
+
+//IsWorking 是否工作状态
+func (n *Node) IsWorking() bool {
+	return n.sidecar.GetState() == sidecar.StateWork
+}
+
+type channelWrapper struct {
+	cc chan []byte
+}
+type processWrapper struct {
+	n *Node
+	f func(*ContextMQ)
+}
+
+//WatchChannel 监听频道 将读取到数据存入chan
+func (n Node) WatchChannel(channel uint16, cc chan []byte) {
+	cs := channelWrapper{
+		cc: cc,
 	}
-	f := v.(func(*ContextMQ))
-	ctx := getCtx(s, n)
-	f(ctx)
+	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 3)
+	n.sidecar.HandleFunc(channel, cs.watchChannelWrapper)
+}
+
+func (wcs channelWrapper) watchChannelWrapper(s transport.Session) error {
+	fd := s.GetFrameSlice().GetData()
+	data := make([]byte, len(fd))
+	copy(data, fd)
+	wcs.cc <- data
 	return nil
 }
 
-//Call 请求 request-reply	每个请求都带有回应id
-func (n *Node) Call(channel uint16, data []byte, reply uint16) error {
-	var ex []byte
-	if reply != TypeTell {
-		ex = make([]byte, 2)
-		util.CopyUint16(ex, reply)
+//SimpleProcess 订阅频道，Process共用tcp读协程，不可有长时间的阻塞或IO。
+func (n *Node) SimpleProcess(channel uint16, f func(*ContextMQ)) {
+	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 3)
+	pw := processWrapper{
+		n: n,
+		f: f,
 	}
+	n.sidecar.HandleFunc(channel, pw.processWrapper)
+}
+
+func (pw processWrapper) processWrapper(s transport.Session) error {
+	ctx := getCtx(s, pw.n)
+	pw.f(ctx)
+	return nil
+}
+
+//SerialProcess 多频道订阅，用单一协程处理多个Process，避免多线程下竟态问题,以单线程的方式写代码。
+func (n *Node) SerialProcess(channels []uint16, f []func(*ContextMQ)) {
+	//TODO
+}
+
+//Unsubscribe 退订频道
+func (n *Node) Unsubscribe(channel uint16) {
+	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 4)
+}
+
+//Call 请求	request-reply模式 ，源使用Call，目标需调用Reply
+func (n *Node) Call(channel uint16, data []byte, reply uint16) error {
+	ex := make([]byte, 2)
+	util.CopyUint16(ex, reply)
 	fs := transport.NewFrameSlice(channel, data, ex)
 	return n.sidecar.AskOne(channel, fs)
 }
 
-//PipelineChannel 数据 TODO 优化json，自己编码
-type PipelineChannel struct {
-	Channel []uint16
+//Tell 不回复请求
+func (n *Node) Tell(channel uint16, data []byte) error {
+	fs := transport.NewFrameSlice(channel, data, nil)
+	return n.sidecar.AskOne(channel, fs)
 }
 
-//Ventilator 开始 pipeline
+//Ventilator 开始 pipeline模式，数据在不同服务之间传递，后续服务需调用Next，最后一个服务不可调用Next。
 func (n *Node) Ventilator(channel []uint16, data []byte) error {
 	if len(channel) < 2 {
 		return errors.New("Ventilator|channel小于2")
 	}
-	var p PipelineChannel
-	p.Channel = channel[1:]
-	vj, err := json.Marshal(p)
-	if err != nil {
-		return errors.New("Ventilator|json编码失败: " + err.Error())
+	l := len(channel)
+	vj := make([]byte, 2*l)
+	for i := 1; i < l; i++ {
+		util.CopyUint16(vj[2*i:2*i+2], channel[i])
 	}
-	fs := transport.NewFrameSlice(channel[0], data, vj)
+	fs := transport.NewFrameSlice(channel[0], data, vj[2:])
 	return n.sidecar.AskOne(channel[0], fs)
 }
 
-//Publish 发布 publisher-subscriber
+//Publish 发布 publisher-subscriber及bus模式，通知所有订阅频道的channel
 func (n *Node) Publish(channel uint16, data []byte) error {
 	fs := transport.NewFrameSlice(channel, data, nil)
 	return n.sidecar.AskAll(channel, fs)
-}
-
-//Unsubscribe 退订 publisher-subscriber
-func (n *Node) Unsubscribe(channel uint16) {
-	var idAndChannel [3]uint16
-	idAndChannel[0] = uint16(n.sidecar.MachineID)
-	idAndChannel[1] = channel
-	idAndChannel[2] = 1
-	n.sidecar.ChangeChannelChan <- idAndChannel
-	n.serverFunc[channel] = nil
 }
 
 //ContextMQ 上下文
@@ -124,17 +145,20 @@ type ContextMQ struct {
 	session transport.Session
 }
 
-//getCtx 取得上下文	TODO 解决slice cap问题
+//getCtx 取得上下文
 func getCtx(s transport.Session, n *Node) *ContextMQ {
 	c := &ContextMQ{
 		Request: s.GetFrameSlice().GetData(),
 		session: s,
 	}
+	//修改slice 的cap
+	r := (*[3]uintptr)(unsafe.Pointer(&c.Request))
+	r[2] = r[1]
 	c.Node = n
 	return c
 }
 
-//Reply 回复 request-reply
+//Reply 回复 request-reply模式 ，源使用Call，目标需调用Reply
 func (c *ContextMQ) Reply(data []byte) error {
 	ex := c.session.GetFrameSlice().GetExtend()
 	if ex == nil {
@@ -144,22 +168,13 @@ func (c *ContextMQ) Reply(data []byte) error {
 	return c.session.WriteFrameDataPromptly(fs)
 }
 
-//Next 下一个 pipeline	TODO优化 自编码
+//Next 下一个 pipeline模式 发布使用Ventilator，后续服务用Next，最后一个服务不得使用Next
 func (c *ContextMQ) Next(data []byte) error {
-	pipeline := &PipelineChannel{}
 	ex := c.session.GetFrameSlice().GetExtend()
-	if err := json.Unmarshal(ex, pipeline); err != nil {
-		return errors.New("Next|json解码错误：" + err.Error() + "    " + string(ex))
-	}
-	if len(pipeline.Channel) < 1 {
+	if len(ex) < 2 {
 		return errors.New("Next|target小于1")
 	}
-	var p PipelineChannel
-	p.Channel = pipeline.Channel[1:]
-	vj, err := json.Marshal(p)
-	if err != nil {
-		return errors.New("Next|json编码失败: " + err.Error())
-	}
-	fs := transport.NewFrameSlice(pipeline.Channel[0], data, vj)
-	return c.sidecar.AskOne(pipeline.Channel[0], fs)
+	channel := util.BytesToUint16(ex[:2])
+	fs := transport.NewFrameSlice(channel, data, ex[2:])
+	return c.sidecar.AskOne(channel, fs)
 }

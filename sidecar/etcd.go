@@ -13,9 +13,6 @@ import (
 	"github.com/duomi520/domi/util"
 )
 
-//SystemCenterStartupTime 时间戳启动计算时间零点
-const SystemCenterStartupTime int64 = 1527811200000000000 //2018-6-1 00:00:00 UTC
-
 //systemServerLock 服务ID分配锁
 const systemServerLock string = "/systemServerLock/"
 
@@ -95,10 +92,9 @@ func (e *etcd) RegisterServer(info Info, endpoints interface{}) (int64, int, err
 		return -1, -1, errors.New("registerServer|保持健康检查失败: " + err.Error())
 	}
 	bSuccess = true
-	e.NodeDeleteChan = make(chan []byte)
-	e.StateChangeChan = make(chan []byte)
-	e.ChannelPutChan = make(chan []byte)
-	e.ChannelDeleteChan = make(chan []byte)
+	e.NodeChan = make(chan nodeMsg, 128)
+	e.StateChan = make(chan stateMsg, 128)
+	e.ChannelChan = make(chan channelMsg, 128)
 	e.NodeWatchChan = e.Client.Watch(context.TODO(), e.NodePrefix, clientv3.WithPrefix())
 	e.StateWatchChan = e.Client.Watch(context.TODO(), e.StatePrefix, clientv3.WithPrefix())
 	e.ChannelWatchChan = e.Client.Watch(context.TODO(), e.ChannelPrefix, clientv3.WithPrefix())
@@ -125,23 +121,32 @@ func (e *etcd) run() {
 			for _, ev := range nw.Events {
 				switch ev.Type {
 				case clientv3.EventTypeDelete:
-					e.NodeDeleteChan <- ev.Kv.Key
+					var nc nodeMsg
+					nc.operation = 2
+					nc.id = getNodeID(ev.Kv.Key)
+					e.NodeChan <- nc
 				}
 			}
 		case sw := <-e.StateWatchChan:
 			for _, ev := range sw.Events {
 				switch ev.Type {
 				case clientv3.EventTypePut:
-					e.StateChangeChan <- ev.Kv.Value
+					sm := bytesTOStateMsg(ev.Kv.Value)
+					sm.operation = 1
+					e.StateChan <- sm
 				}
 			}
 		case cw := <-e.ChannelWatchChan:
 			for _, ev := range cw.Events {
 				switch ev.Type {
 				case clientv3.EventTypePut:
-					e.ChannelPutChan <- ev.Kv.Value
+					cm := valueTOChannelMsg(ev.Kv.Value)
+					cm.operation = 1
+					e.ChannelChan <- cm
 				case clientv3.EventTypeDelete:
-					e.ChannelDeleteChan <- ev.Kv.Key
+					cm := keyTOChannelMsg(ev.Kv.Key)
+					cm.operation = 2
+					e.ChannelChan <- cm
 
 				}
 			}
@@ -169,7 +174,7 @@ func (e *etcd) getMachineID(cli *clientv3.Client) (int, error) {
 		}
 		e.initAddress = append(e.initAddress, *address)
 		id := int(util.BytesToUint16(ev.Key[l:]))
-		if id > -1 && id < util.MaxWorkNumber {
+		if id > -1 && id < MaxWorkNumber {
 			queue = append(queue, id)
 		}
 	}
@@ -184,7 +189,7 @@ func (e *etcd) getMachineID(cli *clientv3.Client) (int, error) {
 			break
 		}
 	}
-	if n == -1 && len(queue) < util.MaxWorkNumber {
+	if n == -1 && len(queue) < MaxWorkNumber {
 		n = len(queue)
 	}
 	if n == -1 {

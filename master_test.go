@@ -8,8 +8,8 @@ import (
 type testMaster struct {
 }
 
-func (p *testMaster) Run()   {}
-func (p *testMaster) Ready() {}
+func (p *testMaster) Run()      {}
+func (p *testMaster) WaitInit() {}
 
 func Test_RunAssembly(t *testing.T) {
 	d := NewMaster()

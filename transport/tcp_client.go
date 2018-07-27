@@ -76,9 +76,8 @@ func (c *ClientTCP) Heartbeat() error {
 	return nil
 }
 
-//Ready 准备好
-func (c *ClientTCP) Ready() {
-}
+//WaitInit 准备好
+func (c *ClientTCP) WaitInit() {}
 
 //Run 运行
 func (c *ClientTCP) Run() {

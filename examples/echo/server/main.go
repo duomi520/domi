@@ -8,15 +8,16 @@ import (
 
 //定义
 const (
-	ChannelMsg uint16 = 50
+	ChannelMsg uint16 = 50 + iota
 	ChannelRpl
 )
 
+//无状态的服务
 func main() {
 	app := domi.NewMaster()
-	r := domi.NewNode(app.Ctx, "1/server/", ":7080", ":9500", []string{"localhost:2379"})
+	r := domi.NewNode(app.Ctx, app.Stop, "server v1.0.0", ":7080", ":9500", []string{"localhost:2379"})
 	app.RunAssembly(r)
-	r.SerialProcess(ChannelMsg, ping)
+	r.SimpleProcess(ChannelMsg, ping)
 	app.Guard()
 }
 func ping(ctx *domi.ContextMQ) {

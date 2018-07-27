@@ -19,18 +19,10 @@ func (w *WaitGroupWrapper) Wrap(cb func()) {
 	}()
 }
 
-//Key 通过Ctx暴露出来的函数
-type Key int
-
-const (
-	//KeyCtxStopFunc Application停止函数
-	KeyCtxStopFunc Key = iota + 101
-)
-
 //Runnable 组件
 type Runnable interface {
 	Run()
-	Ready()
+	WaitInit()
 }
 
 //Child 子模块
@@ -48,7 +40,7 @@ func (c *Child) RunAssembly(a Runnable) {
 		c.Done()
 		atomic.AddInt32(&c.childCount, -1)
 	}()
-	a.Ready()
+	a.WaitInit()
 }
 
 //GetChildCount 取得子模块数
