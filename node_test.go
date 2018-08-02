@@ -167,7 +167,7 @@ func Test_WatchChannel(t *testing.T) {
 	cc := make(chan []byte)
 	n2.WatchChannel(80, cc)
 	time.Sleep(500 * time.Millisecond)
-	err := n1.Tell(80, []byte("Hellow"))
+	err := n1.Notify(80, []byte("Hellow"))
 	if err != nil {
 		t.Fatal(err.Error())
 	}

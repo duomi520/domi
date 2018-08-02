@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"github.com/duomi520/domi/transport"
@@ -20,7 +21,7 @@ const (
 )
 
 //AskOne 请求某一个
-func (c *cluster) AskOne(channel uint16, fs *transport.FrameSlice) error {
+func (c *cluster) AskOne(channel uint16, fs transport.FrameSlice) error {
 	var err error
 	b := (*bucket)(atomic.LoadPointer(&c.channels[channel]))
 	if b != nil {
@@ -48,7 +49,7 @@ func (c *cluster) AskOne(channel uint16, fs *transport.FrameSlice) error {
 }
 
 //AskAll 请求所有
-func (c *cluster) AskAll(channel uint16, fs *transport.FrameSlice) error {
+func (c *cluster) AskAll(channel uint16, fs transport.FrameSlice) error {
 	var err error
 	b := (*bucket)(atomic.LoadPointer(&c.channels[channel]))
 	if b != nil {
@@ -197,6 +198,7 @@ func (c *cluster) Run() {
 			}
 		//关闭
 		case <-c.stopChan:
+			time.Sleep(200000000) //200*time.Millisecond
 			for id := range c.sessions {
 				m := (*member)(atomic.LoadPointer(&c.sessions[id]))
 				if m != nil {

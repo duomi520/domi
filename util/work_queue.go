@@ -1,7 +1,6 @@
 package util
 
 import (
-	"errors"
 	"runtime"
 	"sync"
 	"time"
@@ -48,12 +47,16 @@ type Dispatcher struct {
 
 	JobQueue    chan Job      //任务队列
 	workerQueue chan chan Job //空闲工作者队列
+	jobSlice    []Job         //任务切片
 
 	DispatcherCheckDuration time.Duration //释放闲置的协程的时间间隔
+	workingCount            int           //
 	maxworkerPoolCount      int           //池最大的协程数
-	stopChan                chan struct{} //退出信号
-	closeOnce               sync.Once
-	logger                  *Logger
+
+	stopChan chan struct{} //退出信号
+
+	closeOnce sync.Once
+	logger    *Logger
 	WaitGroupWrapper
 }
 
@@ -66,6 +69,7 @@ func NewDispatcher(name string, maxCount int) *Dispatcher {
 
 		JobQueue:    make(chan Job, MaxQueue),
 		workerQueue: make(chan chan Job, MaxQueue),
+		jobSlice:    make([]Job, 0, MaxQueue),
 
 		DispatcherCheckDuration: 5 * time.Second,
 		maxworkerPoolCount:      maxCount,
@@ -78,13 +82,8 @@ func NewDispatcher(name string, maxCount int) *Dispatcher {
 //PutJob 入队操作
 //运行一个任务 多路复用，运行的顺序是打乱的。
 func (d *Dispatcher) PutJob(j Job) error {
-	select {
-	case <-d.stopChan:
-		return errors.New("util.PutJob|调度者已关闭。")
-	default:
-		d.JobQueue <- j
-		return nil
-	}
+	d.JobQueue <- j
+	return nil
 }
 
 //Run 运行
@@ -92,9 +91,13 @@ func (d *Dispatcher) Run() {
 	d.logger.Debug("Run|调度守护启动……")
 	check := time.NewTicker(d.DispatcherCheckDuration)
 	minimumWorker := runtime.NumCPU() + 8
+	if d.maxworkerPoolCount < minimumWorker {
+		d.maxworkerPoolCount = minimumWorker
+	}
 	//初始化空闲工作者池
-	workerPool := make([]chan Job, d.maxworkerPoolCount)
-	for i := 0; i < d.maxworkerPoolCount; i++ {
+	workerPool := make([]chan Job, minimumWorker, d.maxworkerPoolCount)
+	d.workingCount = minimumWorker
+	for i := 0; i < minimumWorker; i++ {
 		worker := NewWorker(d)
 		workerPool[i] = worker.jobChan
 		d.Wrap(worker.run)
@@ -102,35 +105,45 @@ func (d *Dispatcher) Run() {
 	for {
 		select {
 		case jobChannel := <-d.workerQueue:
-			//超出池上限的协程释放。
-			if len(workerPool) >= d.maxworkerPoolCount {
-				//通知工作者关闭。
-				jobChannel <- nil
+			if len(d.jobSlice) > 0 {
+				jobChannel <- d.jobSlice[0]
+				d.jobSlice = d.jobSlice[1:]
 			} else {
-				//放入池。
-				workerPool = append(workerPool, jobChannel)
-			}
-		//多路复用，运行任务的顺序是打乱的。
-		case job := <-d.JobQueue:
-			n := len(workerPool) - 1
-			if n < 0 {
-				//池中协程用完后，新建协程，牺牲内存抗峰值。
-				//TODO 压测时，内存上升快，同时协程太多，调度不过来，反而更慢，需改善。
-				worker := NewWorker(d)
-				d.Wrap(worker.run)
-				worker.jobChan <- job
-			} else {
-				workerPool[n] <- job
-				workerPool[n] = nil
-				workerPool = workerPool[:n]
+				//超出池上限的协程释放。
+				if len(workerPool) >= d.maxworkerPoolCount {
+					//通知工作者关闭。
+					jobChannel <- nil
+					d.workingCount--
+				} else {
+					//放入池。
+					workerPool = append(workerPool, jobChannel)
+				}
 			}
 
+		//多路复用，运行任务的顺序是打乱的。
+		case job := <-d.JobQueue:
+			if d.workingCount <= d.maxworkerPoolCount {
+				n := len(workerPool) - 1
+				if n < 0 {
+					worker := NewWorker(d)
+					d.Wrap(worker.run)
+					d.workingCount++
+					worker.jobChan <- job
+				} else {
+					workerPool[n] <- job
+					workerPool[n] = nil
+					workerPool = workerPool[:n]
+				}
+			} else {
+				d.jobSlice = append(d.jobSlice, job)
+			}
 		case <-check.C:
 			//定时释放空闲的协程。
 			n := len(workerPool)
 			if n > minimumWorker {
 				for i := minimumWorker; i < n; i++ {
 					workerPool[i] <- nil
+					d.workingCount--
 				}
 				workerPool = workerPool[:minimumWorker]
 			}

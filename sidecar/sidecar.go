@@ -17,7 +17,7 @@ type Sidecar struct {
 	ctx      context.Context
 	exitFunc func()
 
-	dispatcher *util.Dispatcher
+	Dispatcher *util.Dispatcher
 	tcpServer  *transport.ServerTCP
 	httpServer *http.Server
 
@@ -46,12 +46,11 @@ func NewSidecar(ctx context.Context, cancel func(), name, HTTPPort, TCPPort stri
 	//监视
 	s.cluster, err = newCluster(name, HTTPPort, TCPPort, operation, logger)
 	if err != nil {
-		s.Logger.Error(err)
-		return nil
+		s.Logger.Fatal(err)
 	}
-	s.dispatcher = util.NewDispatcher("TCP", 256)
+	s.Dispatcher = util.NewDispatcher("TCP", 128)
 	//tcp支持
-	s.tcpServer = transport.NewServerTCP(ctx, TCPPort, s.Handler, s.dispatcher)
+	s.tcpServer = transport.NewServerTCP(ctx, TCPPort, s.Handler, s.Dispatcher)
 	if s.tcpServer == nil {
 		s.Logger.Error("NewSidecar|NewServerTCP失败:" + TCPPort)
 		return nil
@@ -93,7 +92,7 @@ func (s *Sidecar) Run() {
 		}
 	}()
 	//启动tcp
-	go s.dispatcher.Run()
+	go s.Dispatcher.Run()
 	s.Logger.Info("Run|TCP监听端口", s.TCPPort)
 	s.RunAssembly(s.tcpServer)
 	//与其它服务器建立连接
@@ -120,7 +119,7 @@ func (s *Sidecar) Run() {
 			s.SetState(StateDie)
 			s.Wait()
 			s.httpServer.Shutdown(context.TODO())
-			s.dispatcher.Close()
+			s.Dispatcher.Close()
 			s.Logger.Info("Run|Sidecar关闭。")
 			if err := s.DisconDistributer(); err != nil {
 				s.Logger.Error(err)
@@ -144,7 +143,7 @@ func (s *Sidecar) dialNode(heartbeatSlice []*transport.ClientTCP) {
 	data := make([]byte, 2)
 	fs := transport.NewFrameSlice(transport.FrameTypeNodeName, data, nil)
 	for i, node := range s.GetInitAddress() {
-		cli, err := transport.NewClientTCP(s.ctx, s.getURLTCP(node), s.Handler, s.dispatcher)
+		cli, err := transport.NewClientTCP(s.ctx, s.getURLTCP(node), s.Handler, s.Dispatcher)
 		if err != nil {
 			s.Logger.Error("Run|错误：" + err.Error())
 			continue

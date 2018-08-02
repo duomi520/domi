@@ -45,6 +45,41 @@ TODO
 
 ## 快速开始
 
+### 调用
+
+```golang
+package main
+import (
+    "fmt"
+    "github.com/duomi520/domi"
+)
+//频道
+const (
+    ChannelMsg uint16 = 50 + iota
+    ChannelRpl
+)
+
+func main() {
+    app := domi.NewMaster()//新建管理协程
+    //app.Stop服务退出函数，"client v1.0.0" 服务名，":7081" http端口号，":9501" tcp端口号，最后一个为 etcd 服务地址
+    r := domi.NewNode(app.Ctx, app.Stop, "client V1.0.0", ":7081", ":9501", []string{"localhost:2379"})
+    app.RunAssembly(r)//运行r节点
+    r.SimpleProcess(ChannelRpl, pong)//订阅频道ChannelRpl，关联到处理函数pong
+    //请求频道ChannelMsg服务，同时告知回复频道为ChannelRpl
+    if err := r.Call(ChannelMsg, []byte("ping"), ChannelRpl); err != nil {
+        fmt.Println(err)
+    }
+    app.Guard()//管理协程阻塞
+}
+//频道ChannelRpl的处理函数
+func pong(ctx *domi.ContextMQ) {
+    fmt.Println(string(ctx.Request))
+}
+
+```
+
+### 无状态的服务
+
 ```golang
 package main
 import (
@@ -67,6 +102,7 @@ func main() {
 }
 //频道ChannelMsg的处理函数
 func ping(ctx *domi.ContextMQ) {
+    fmt.Println(string(ctx.Request))
     ctx.Reply([]byte("pong"))//回复“pong”
 }
 

@@ -23,7 +23,8 @@ func main() {
 	clientN(500)
 	clientN(1000)
 	clientN(2500)
-//	clientN(5000)
+	//clientN(5000)
+	//clientN(10000)
 }
 
 func dial() *transport.SessionTCP {
@@ -46,7 +47,7 @@ func dial() *transport.SessionTCP {
 var clientNwg sync.WaitGroup
 
 func clientN(num int) {
-	sd := util.NewDispatcher("TCPClient", 256)
+	sd := util.NewDispatcher("TCPClient", 24)
 	go sd.Run()
 	defer sd.Close()
 	loop := 50000000
@@ -65,9 +66,8 @@ func clientN(num int) {
 		}
 		cs[i].Logger.SetLevel(util.ErrorLevel)
 		go cs[k].Run()
-		time.Sleep(1 * time.Millisecond) //防止连接太快，被操作系统拒绝。
 	}
-	time.Sleep(2000 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 	fmt.Printf("测试 ")
 	clientNwg.Add(loop)
 	start := time.Now()

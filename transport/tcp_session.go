@@ -43,26 +43,28 @@ func NewSessionTCP(conn *net.TCPConn) *SessionTCP {
 //Close 关闭
 func (s *SessionTCP) Close() {
 	s.closeOnce.Do(func() {
-		time.Sleep(200000000) //200*time.Millisecond
-		s.Conn.Close()
 		util.BytesPoolPut(s.rBuf)
+		s.rBuf = nil
 		if s.wSlot != nil {
 			util.BytesPoolPut(s.wSlot.buf)
+			s.wSlot.buf = nil
+			s.wSlot = nil
 		}
+		s.Conn.Close()
+		s = nil
 	})
 }
 
 //GetFrameSlice 取得当前帧,线程不安全,必要时先拷贝。
-func (s *SessionTCP) GetFrameSlice() *FrameSlice {
+func (s *SessionTCP) GetFrameSlice() FrameSlice {
 	if s.w < s.r+FrameHeadLength {
-		return nil
+		return FrameNil
 	}
 	length := int(util.BytesToUint32(s.rBuf[s.r : s.r+4]))
 	if s.r+length <= s.w {
-		frameSlice := DecodeByBytes(s.rBuf[s.r : s.r+length])
-		return frameSlice
+		return DecodeByBytes(s.rBuf[s.r : s.r+length])
 	}
-	return nil
+	return FrameNil
 }
 
 //getFrameType 取得当前帧类型
@@ -101,7 +103,7 @@ func (s *SessionTCP) ioRead() error {
 }
 
 //WriteFrameDataPromptly 立即发送数据 without delay
-func (s *SessionTCP) WriteFrameDataPromptly(f *FrameSlice) error {
+func (s *SessionTCP) WriteFrameDataPromptly(f FrameSlice) error {
 	var err error
 	if f.GetFrameLength() >= FrameHeadLength {
 		if err = s.Conn.SetWriteDeadline(time.Now().Add(DefaultDeadlineDuration)); err != nil {
@@ -113,10 +115,11 @@ func (s *SessionTCP) WriteFrameDataPromptly(f *FrameSlice) error {
 }
 
 //DefaultDelayedSend 延迟发送的时间间隔
-const DefaultDelayedSend time.Duration = 2000000 //2*time.Millisecond
+const DefaultDelayedSend time.Duration = 5 * time.Millisecond
 
 //WriteFrameDataToCache 写入发送缓存
-func (s *SessionTCP) WriteFrameDataToCache(f *FrameSlice) error {
+func (s *SessionTCP) WriteFrameDataToCache(f FrameSlice) error {
+loop:
 	myslot := (*slot)(atomic.LoadPointer((*unsafe.Pointer)(unsafe.Pointer(&s.wSlot))))
 	length := int32(f.GetFrameLength())
 	end := atomic.AddInt32(&myslot.allotCursor, length)
@@ -124,8 +127,8 @@ func (s *SessionTCP) WriteFrameDataToCache(f *FrameSlice) error {
 	if end >= int32(util.BytesPoolLenght) {
 		//申请的地址超出边界
 		if start >= int32(util.BytesPoolLenght) {
-			time.Sleep(time.Millisecond) //自旋等待
-			return s.WriteFrameDataToCache(f)
+			time.Sleep(2000) //自旋等待  2 * time.Microsecond
+			goto loop
 		}
 		//刚好越界触发
 		ns := newSlot(s)
@@ -135,15 +138,12 @@ func (s *SessionTCP) WriteFrameDataToCache(f *FrameSlice) error {
 			for atomic.LoadInt32(&myslot.availableCursor) != start {
 			}
 			s.Add(1)
-			if err := s.dispatcher.PutJob(myslot); err != nil {
-				s.Done()
-				return err
-			}
+			s.dispatcher.JobQueue <- myslot
 		}
 		if f.GetFrameLength() > util.BytesPoolLenght {
 			return nil
 		}
-		return s.WriteFrameDataToCache(f)
+		goto loop
 	}
 	f.WriteToBytes(myslot.buf[start:end])
 	atomic.AddInt32(&myslot.availableCursor, length)
@@ -186,14 +186,17 @@ func newSlot(s *SessionTCP) *slot {
 
 //WorkFunc 发送
 func (ws *slot) WorkFunc() {
-	defer ws.session.Done()
-	defer util.BytesPoolPut(ws.buf)
 	if ws.availableCursor >= int32(FrameHeadLength) {
 		if err := ws.session.Conn.SetWriteDeadline(time.Now().Add(DefaultDeadlineDuration)); err != nil {
-			return
+			goto end
 		}
 		if _, err := ws.session.Conn.Write(ws.buf[:ws.availableCursor]); err != nil {
-			return
+			goto end
 		}
 	}
+end:
+	util.BytesPoolPut(ws.buf)
+	ws.session.Done()
+	ws.buf = nil
+	ws = nil
 }

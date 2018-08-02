@@ -66,8 +66,8 @@ func protocolMagic(u uint32) bool {
 
 //Session 会话接口
 type Session interface {
-	GetFrameSlice() *FrameSlice //帧指向的空间将在下次io读取时被覆盖。
-	WriteFrameDataPromptly(*FrameSlice) error
-	WriteFrameDataToCache(*FrameSlice) error
+	GetFrameSlice() FrameSlice //帧指向的空间将在下次io读取时被覆盖。
+	WriteFrameDataPromptly(FrameSlice) error
+	WriteFrameDataToCache(FrameSlice) error
 	Close()
 }

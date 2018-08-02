@@ -57,8 +57,9 @@ type channelWrapper struct {
 	cc chan []byte
 }
 type processWrapper struct {
-	n *Node
-	f func(*ContextMQ)
+	serial *Serial
+	n      *Node
+	f      func(*ContextMQ)
 }
 
 //WatchChannel 监听频道 将读取到数据存入chan
@@ -94,11 +95,6 @@ func (pw processWrapper) processWrapper(s transport.Session) error {
 	return nil
 }
 
-//SerialProcess 多频道订阅，用单一协程处理多个Process，避免多线程下竟态问题,以单线程的方式写代码。
-func (n *Node) SerialProcess(channels []uint16, f []func(*ContextMQ)) {
-	//TODO
-}
-
 //Unsubscribe 退订频道
 func (n *Node) Unsubscribe(channel uint16) {
 	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 4)
@@ -112,8 +108,8 @@ func (n *Node) Call(channel uint16, data []byte, reply uint16) error {
 	return n.sidecar.AskOne(channel, fs)
 }
 
-//Tell 不回复请求
-func (n *Node) Tell(channel uint16, data []byte) error {
+//Notify 不回复请求
+func (n *Node) Notify(channel uint16, data []byte) error {
 	fs := transport.NewFrameSlice(channel, data, nil)
 	return n.sidecar.AskOne(channel, fs)
 }
@@ -121,7 +117,7 @@ func (n *Node) Tell(channel uint16, data []byte) error {
 //Ventilator 开始 pipeline模式，数据在不同服务之间传递，后续服务需调用Next，最后一个服务不可调用Next。
 func (n *Node) Ventilator(channel []uint16, data []byte) error {
 	if len(channel) < 2 {
-		return errors.New("Ventilator|channel小于2")
+		return errors.New("Ventilator|频道数量小于2")
 	}
 	l := len(channel)
 	vj := make([]byte, 2*l)
@@ -132,7 +128,8 @@ func (n *Node) Ventilator(channel []uint16, data []byte) error {
 	return n.sidecar.AskOne(channel[0], fs)
 }
 
-//Publish 发布 publisher-subscriber及bus模式，通知所有订阅频道的channel
+//Publish 发布，通知所有订阅频道的节点
+//只有一个节点发表时为publisher-subscriber模式，所有节点都能发表为bus模式
 func (n *Node) Publish(channel uint16, data []byte) error {
 	fs := transport.NewFrameSlice(channel, data, nil)
 	return n.sidecar.AskAll(channel, fs)
@@ -141,15 +138,17 @@ func (n *Node) Publish(channel uint16, data []byte) error {
 //ContextMQ 上下文
 type ContextMQ struct {
 	*Node
-	Request []byte
-	session transport.Session
+	Request  []byte
+	ex       []byte
+	response func(transport.FrameSlice) error
 }
 
 //getCtx 取得上下文
 func getCtx(s transport.Session, n *Node) *ContextMQ {
 	c := &ContextMQ{
-		Request: s.GetFrameSlice().GetData(),
-		session: s,
+		Request:  s.GetFrameSlice().GetData(),
+		ex:       s.GetFrameSlice().GetExtend(),
+		response: s.WriteFrameDataPromptly,
 	}
 	//修改slice 的cap
 	r := (*[3]uintptr)(unsafe.Pointer(&c.Request))
@@ -160,21 +159,19 @@ func getCtx(s transport.Session, n *Node) *ContextMQ {
 
 //Reply 回复 request-reply模式 ，源使用Call，目标需调用Reply
 func (c *ContextMQ) Reply(data []byte) error {
-	ex := c.session.GetFrameSlice().GetExtend()
-	if ex == nil {
-		return fmt.Errorf("Reply|该请求无回复处理函数。")
+	if c.ex == nil {
+		return fmt.Errorf("Reply|该请求无需回复。")
 	}
-	fs := transport.NewFrameSlice(util.BytesToUint16(ex), data, nil)
-	return c.session.WriteFrameDataPromptly(fs)
+	fs := transport.NewFrameSlice(util.BytesToUint16(c.ex), data, nil)
+	return c.response(fs)
 }
 
 //Next 下一个 pipeline模式 发布使用Ventilator，后续服务用Next，最后一个服务不得使用Next
 func (c *ContextMQ) Next(data []byte) error {
-	ex := c.session.GetFrameSlice().GetExtend()
-	if len(ex) < 2 {
-		return errors.New("Next|target小于1")
+	if len(c.ex) < 2 {
+		return errors.New("Next|最后一个服务不得使用Next。")
 	}
-	channel := util.BytesToUint16(ex[:2])
-	fs := transport.NewFrameSlice(channel, data, ex[2:])
+	channel := util.BytesToUint16(c.ex[:2])
+	fs := transport.NewFrameSlice(channel, data, c.ex[2:])
 	return c.sidecar.AskOne(channel, fs)
 }
