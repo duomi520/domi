@@ -12,7 +12,7 @@ import (
 func main() {
 	a := domi.NewMaster()
 	h := transport.NewHandler()
-	sd := util.NewDispatcher("TCP", 24)
+	sd := util.NewDispatcher("TCP", 128)
 	go sd.Run()
 	s := transport.NewServerTCP(a.Ctx, ":4567", h, sd)
 	h.HandleFunc(transport.FrameTypePing, ping)

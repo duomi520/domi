@@ -57,13 +57,12 @@ type channelWrapper struct {
 	cc chan []byte
 }
 type processWrapper struct {
-	serial *Serial
-	n      *Node
-	f      func(*ContextMQ)
+	n *Node
+	f func(*ContextMQ)
 }
 
 //WatchChannel 监听频道 将读取到数据存入chan
-func (n Node) WatchChannel(channel uint16, cc chan []byte) {
+func (n *Node) WatchChannel(channel uint16, cc chan []byte) {
 	cs := channelWrapper{
 		cc: cc,
 	}
@@ -79,7 +78,7 @@ func (wcs channelWrapper) watchChannelWrapper(s transport.Session) error {
 	return nil
 }
 
-//SimpleProcess 订阅频道，Process共用tcp读协程，不可有长时间的阻塞或IO。
+//SimpleProcess 订阅频道，Process共用tcp读协程，不可有长时间的阻塞或IO。TODO 删除
 func (n *Node) SimpleProcess(channel uint16, f func(*ContextMQ)) {
 	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 3)
 	pw := processWrapper{
@@ -90,8 +89,43 @@ func (n *Node) SimpleProcess(channel uint16, f func(*ContextMQ)) {
 }
 
 func (pw processWrapper) processWrapper(s transport.Session) error {
-	ctx := getCtx(s, pw.n)
-	pw.f(ctx)
+	c := &ContextMQ{
+		Request:  s.GetFrameSlice().GetData(),
+		ex:       s.GetFrameSlice().GetExtend(),
+		response: s.WriteFrameDataPromptly,
+	}
+	//修改slice 的cap
+	r := (*[3]uintptr)(unsafe.Pointer(&c.Request))
+	r[2] = r[1]
+	c.Node = pw.n
+	pw.f(c)
+	return nil
+}
+
+//Subscribe 订阅频道，支持长时间的阻塞或IO。
+func (n *Node) Subscribe(channel uint16, f func(*ContextMQ)) {
+	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 3)
+	pw := processWrapper{
+		n: n,
+		f: f,
+	}
+	n.sidecar.HandleFunc(channel, pw.completeProcessWrapper)
+}
+
+func (pw processWrapper) completeProcessWrapper(s transport.Session) error {
+	fd := s.GetFrameSlice().GetData()
+	fe := s.GetFrameSlice().GetExtend()
+	data := make([]byte, len(fd))
+	copy(data, fd)
+	ex := make([]byte, len(fe))
+	copy(ex, fe)
+	c := &ContextMQ{
+		Request:  data,
+		ex:       ex,
+		response: s.WriteFrameDataPromptly,
+	}
+	c.Node = pw.n
+	pw.f(c)
 	return nil
 }
 
@@ -100,7 +134,7 @@ func (n *Node) Unsubscribe(channel uint16) {
 	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 4)
 }
 
-//Call 请求	request-reply模式 ，源使用Call，目标需调用Reply
+//Call 请求	request-reply模式 ，使用Call，服务需调用Reply。
 func (n *Node) Call(channel uint16, data []byte, reply uint16) error {
 	ex := make([]byte, 2)
 	util.CopyUint16(ex, reply)
@@ -108,7 +142,7 @@ func (n *Node) Call(channel uint16, data []byte, reply uint16) error {
 	return n.sidecar.AskOne(channel, fs)
 }
 
-//Notify 不回复请求
+//Notify 不回复请求，申请一服务处理。
 func (n *Node) Notify(channel uint16, data []byte) error {
 	fs := transport.NewFrameSlice(channel, data, nil)
 	return n.sidecar.AskOne(channel, fs)
@@ -141,20 +175,6 @@ type ContextMQ struct {
 	Request  []byte
 	ex       []byte
 	response func(transport.FrameSlice) error
-}
-
-//getCtx 取得上下文
-func getCtx(s transport.Session, n *Node) *ContextMQ {
-	c := &ContextMQ{
-		Request:  s.GetFrameSlice().GetData(),
-		ex:       s.GetFrameSlice().GetExtend(),
-		response: s.WriteFrameDataPromptly,
-	}
-	//修改slice 的cap
-	r := (*[3]uintptr)(unsafe.Pointer(&c.Request))
-	r[2] = r[1]
-	c.Node = n
-	return c
 }
 
 //Reply 回复 request-reply模式 ，源使用Call，目标需调用Reply

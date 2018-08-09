@@ -24,7 +24,7 @@ const (
 	FrameTypeExit
 	FrameTypePing
 	FrameTypePong
-	FrameTypeOverflow
+	FrameType6
 	FrameType7
 	FrameType8
 	FrameType9
@@ -39,7 +39,6 @@ var (
 	FrameExit       FrameSlice
 	FramePing       FrameSlice
 	FramePong       FrameSlice
-	FrameOverflow   FrameSlice
 )
 
 //初始化
@@ -51,10 +50,6 @@ func init() {
 	FrameExit = DecodeByBytes(buf[24:32])
 	FramePing = DecodeByBytes(buf[32:44])
 	FramePong = DecodeByBytes(buf[44:])
-	overflow := make([]byte, util.BytesPoolLenght+8)
-	util.CopyUint32(overflow[0:4], uint32(util.BytesPoolLenght+8))
-	util.CopyUint16(overflow[6:8], FrameTypeOverflow)
-	FrameOverflow = DecodeByBytes(overflow)
 }
 
 //FrameSlice 帧切片

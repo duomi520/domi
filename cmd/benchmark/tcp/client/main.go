@@ -23,8 +23,8 @@ func main() {
 	clientN(500)
 	clientN(1000)
 	clientN(2500)
-	//clientN(5000)
-	//clientN(10000)
+	clientN(5000)
+	//	clientN(10000)
 }
 
 func dial() *transport.SessionTCP {
@@ -47,7 +47,7 @@ func dial() *transport.SessionTCP {
 var clientNwg sync.WaitGroup
 
 func clientN(num int) {
-	sd := util.NewDispatcher("TCPClient", 24)
+	sd := util.NewDispatcher("TCPClient", 128)
 	go sd.Run()
 	defer sd.Close()
 	loop := 50000000

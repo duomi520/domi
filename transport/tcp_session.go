@@ -44,10 +44,8 @@ func NewSessionTCP(conn *net.TCPConn) *SessionTCP {
 func (s *SessionTCP) Close() {
 	s.closeOnce.Do(func() {
 		util.BytesPoolPut(s.rBuf)
-		s.rBuf = nil
 		if s.wSlot != nil {
 			util.BytesPoolPut(s.wSlot.buf)
-			s.wSlot.buf = nil
 			s.wSlot = nil
 		}
 		s.Conn.Close()
@@ -114,42 +112,33 @@ func (s *SessionTCP) WriteFrameDataPromptly(f FrameSlice) error {
 	return err
 }
 
-//DefaultDelayedSend 延迟发送的时间间隔
-const DefaultDelayedSend time.Duration = 5 * time.Millisecond
-
 //WriteFrameDataToCache 写入发送缓存
 func (s *SessionTCP) WriteFrameDataToCache(f FrameSlice) error {
 loop:
 	myslot := (*slot)(atomic.LoadPointer((*unsafe.Pointer)(unsafe.Pointer(&s.wSlot))))
+	atomic.AddInt32(&myslot.count, 1)
 	length := int32(f.GetFrameLength())
 	end := atomic.AddInt32(&myslot.allotCursor, length)
 	start := end - length
 	if end >= int32(util.BytesPoolLenght) {
 		//申请的地址超出边界
 		if start >= int32(util.BytesPoolLenght) {
-			time.Sleep(2000) //自旋等待  2 * time.Microsecond
+			atomic.AddInt32(&myslot.count, -1)
 			goto loop
 		}
 		//刚好越界触发
 		ns := newSlot(s)
 		atomic.SwapPointer((*unsafe.Pointer)(unsafe.Pointer(&s.wSlot)), unsafe.Pointer(ns))
-		if start > 0 {
-			//自旋等待其它协程提交
-			for atomic.LoadInt32(&myslot.availableCursor) != start {
-			}
-			s.Add(1)
-			s.dispatcher.JobQueue <- myslot
-		}
-		if f.GetFrameLength() > util.BytesPoolLenght {
-			return nil
-		}
+		atomic.AddInt32(&myslot.count, -1)
 		goto loop
 	}
 	f.WriteToBytes(myslot.buf[start:end])
 	atomic.AddInt32(&myslot.availableCursor, length)
+	atomic.AddInt32(&myslot.count, -1)
 	//发出越界触发
 	if start == 0 {
-		time.AfterFunc(DefaultDelayedSend, func() { s.WriteFrameDataToCache(FrameOverflow) })
+		s.Add(1)
+		s.dispatcher.JobQueue <- myslot
 	}
 	return nil
 }
@@ -173,6 +162,7 @@ type slot struct {
 	buf             []byte
 	allotCursor     int32 //申请位置
 	availableCursor int32 //已提交位置
+	count           int32 //占用数
 }
 
 func newSlot(s *SessionTCP) *slot {
@@ -181,11 +171,19 @@ func newSlot(s *SessionTCP) *slot {
 		buf:             util.BytesPoolGet(),
 		allotCursor:     0,
 		availableCursor: 0,
+		count:           0,
 	}
 }
 
 //WorkFunc 发送
 func (ws *slot) WorkFunc() {
+	ns := newSlot(ws.session)
+	atomic.SwapPointer((*unsafe.Pointer)(unsafe.Pointer(&(ws.session.wSlot))), unsafe.Pointer(ns))
+	time.Sleep(time.Microsecond)
+	//自旋等待其它协程提交
+	for atomic.LoadInt32(&ws.count) != 0 {
+		time.Sleep(time.Microsecond)
+	}
 	if ws.availableCursor >= int32(FrameHeadLength) {
 		if err := ws.session.Conn.SetWriteDeadline(time.Now().Add(DefaultDeadlineDuration)); err != nil {
 			goto end
@@ -197,6 +195,5 @@ func (ws *slot) WorkFunc() {
 end:
 	util.BytesPoolPut(ws.buf)
 	ws.session.Done()
-	ws.buf = nil
 	ws = nil
 }

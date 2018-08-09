@@ -52,6 +52,20 @@ func Test_ReqRep1(t *testing.T) {
 	time.Sleep(1000 * time.Millisecond)
 }
 
+func Test_ReqRep2(t *testing.T) {
+	ctxExitFunc, n1, n2 := test2Node()
+	n2.Subscribe(56, testRequest)
+	n1.Subscribe(57, testReply)
+	time.Sleep(500 * time.Millisecond)
+	err := n1.Call(56, []byte("Hellow"), 57)
+	if err != nil {
+		t.Error(err.Error())
+	}
+	time.Sleep(150 * time.Millisecond)
+	ctxExitFunc()
+	time.Sleep(1000 * time.Millisecond)
+}
+
 func testRequest(ctx *ContextMQ) {
 	fmt.Println(ctx.sidecar.MachineID, " testRequest:", string(ctx.Request))
 	ctx.Reply([]byte("Hi"))

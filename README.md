@@ -60,16 +60,20 @@ const (
 )
 
 func main() {
-    app := domi.NewMaster()//新建管理协程
+    //新建管理协程
+    app := domi.NewMaster()
     //app.Stop服务退出函数，"client v1.0.0" 服务名，":7081" http端口号，":9501" tcp端口号，最后一个为 etcd 服务地址
     r := domi.NewNode(app.Ctx, app.Stop, "client V1.0.0", ":7081", ":9501", []string{"localhost:2379"})
-    app.RunAssembly(r)//运行r节点
-    r.SimpleProcess(ChannelRpl, pong)//订阅频道ChannelRpl，关联到处理函数pong
+    //运行r节点
+    app.RunAssembly(r)
+    //订阅频道ChannelRpl，关联到处理函数pong
+    r.Subscribe(ChannelRpl, pong)
     //请求频道ChannelMsg服务，同时告知回复频道为ChannelRpl
     if err := r.Call(ChannelMsg, []byte("ping"), ChannelRpl); err != nil {
         fmt.Println(err)
     }
-    app.Guard()//管理协程阻塞
+    //管理协程阻塞
+    app.Guard()
 }
 //频道ChannelRpl的处理函数
 func pong(ctx *domi.ContextMQ) {
@@ -93,27 +97,165 @@ const (
 )
 //无状态的服务
 func main() {
-    app := domi.NewMaster()//新建管理协程
+    //新建管理协程
+    app := domi.NewMaster()
     //app.Stop服务退出函数，"server v1.0.0" 服务名，":7080" http端口号，":9500" tcp端口号，最后一个为 etcd 服务地址
     r := domi.NewNode(app.Ctx, app.Stop, "server v1.0.0", ":7080", ":9500", []string{"localhost:2379"})
-    app.RunAssembly(r)//运行r节点
-    r.SimpleProcess(ChannelMsg, ping)//订阅频道ChannelMsg，关联到处理函数ping
-    app.Guard()//管理协程阻塞
+    //运行r节点
+    app.RunAssembly(r)
+    //订阅频道ChannelMsg，关联到处理函数ping
+    r.Subscribe(ChannelMsg, ping)
+    //管理协程阻塞
+    app.Guard()
 }
 //频道ChannelMsg的处理函数
 func ping(ctx *domi.ContextMQ) {
     fmt.Println(string(ctx.Request))
-    ctx.Reply([]byte("pong"))//回复“pong”
+    //回复“pong”
+    ctx.Reply([]byte("pong"))
 }
 
 ```
 
 ## API样例
 
-### 注册频道
+### 订阅频道
+
+Subscribe 订阅频道。
 
 ```golang
+func main() {
+    ...
+    //注册ChannelRpl的处理函数，回复[]byte("pong")
+    r.Subscribe(ChannelMsg, func(c *domi.ContextMQ) {
+        c.Reply([]byte("pong"))
+        })
+    ...
+}
+```
 
+WatchChannel 监听频道 将读取到数据存入chan
+
+```golang
+func main() {
+    ...
+    cc := make(chan []byte,128)
+    r.WatchChannel(ChannelMsg, cc)
+    ...
+}
+```
+
+Unsubscribe 退订频道
+
+```golang
+func main() {
+    ...
+    //退订频道ChannelMsg
+    r.Unsubscribe(ChannelMsg)
+    ...
+}
+```
+
+### 往频道发送请求
+
+Notify 不回复请求，申请一服务处理。
+
+```golang
+func main() {
+    ...
+    //往频道ChannelMsg发送[]byte("Hellow")
+    err := r.Notify(ChannelMsg, []byte("Hellow"))
+    if err != nil {
+        fmt.Println(err.Error())
+    }
+    ...
+}
+```
+
+Call 请求，申请一服务处理，使用Call，服务需调用Reply。
+
+```golang
+func main() {
+    ...
+    //注册ChannelRpl的处理函数pong
+    r.Subscribe(ChannelRpl, pong)
+    //往频道ChannelMsg发送[]byte("ping"),在函数pong中处理服务回复的信息。
+    if err := r.Call(ChannelMsg, []byte("ping"), ChannelRpl); err != nil {
+        fmt.Println(err)
+    }
+    ...
+}
+func pong(ctx *domi.ContextMQ) {
+    fmt.Println(string(ctx.Request))
+}
+```
+
+```golang
+func main() {
+    ...
+    cc := make(chan []byte)
+    r.WatchChannel(ChannelRpl, cc)
+    //往频道ChannelMsg发送[]byte("ping")。
+    if err := r.Call(ChannelMsg, []byte("ping"), ChannelRpl); err != nil {
+        fmt.Println(err)
+    }
+    //阻塞，等收到回复的信息后继续处理。
+    data:=<-cc
+    ...
+}
+```
+
+Publish 发布，通知所有订阅频道的节点。
+
+```golang
+func main() {
+    ...
+    //往频道ChannelMsg广播[]byte("Hellow")
+    if err := r.Publish(ChannelMsg, []byte("Hellow")); err != nil {
+        fmt.Println(err.Error())
+    }
+    ...
+}
+```
+
+Ventilator 开始，pipeline模式，数据在不同服务之间传递，后续服务需调用Next，以将服务传递给下一个服务，最后一个服务不可调用Next。
+
+```golang
+func main() {
+    ...
+    //后续服务通过注册频道Channel1、 Channel2、 Channel3来完成处理。
+    if err :=r.Ventilator([]uint16{Channel1, Channel2, Channel3}, []byte("Pipeline")); err != nil {
+        fmt.Println(err.Error())
+    }
+    ...
+}
+```
+
+### 后处理
+
+Reply 回复，与Call配套，回复请求。
+
+```golang
+func ping(c *domi.ContextMQ) {
+    ...
+    //回复“pong”
+    if err :=c.Reply([]byte("pong")); err != nil {
+         fmt.Println(err.Error())
+    }
+    ...
+}
+```
+
+Next 下一个，pipeline模式，发布使用Ventilator，后续服务用Next，最后一个服务不得使用Next。
+
+```golang
+func do(c *domi.ContextMQ) {
+    ...
+    if err :=c.Next(data); err != nil {
+         fmt.Println(err.Error())
+    }
+    ...
+}
 ```
 
 ## 版本
