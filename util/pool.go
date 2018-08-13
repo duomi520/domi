@@ -6,7 +6,7 @@ import (
 )
 
 //BytesPoolLenght 长度
-const BytesPoolLenght int = 2048 //值为2的N次方
+const BytesPoolLenght int = 16384
 
 //bufferPool bytesPool 池
 var bufferPool sync.Pool

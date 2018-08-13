@@ -124,7 +124,7 @@ func ping(ctx *domi.ContextMQ) {
 Subscribe 订阅频道。
 
 ```golang
-func main() {
+func do() {
     ...
     //注册ChannelRpl的处理函数，回复[]byte("pong")
     r.Subscribe(ChannelMsg, func(c *domi.ContextMQ) {
@@ -137,7 +137,7 @@ func main() {
 WatchChannel 监听频道 将读取到数据存入chan
 
 ```golang
-func main() {
+func do() {
     ...
     cc := make(chan []byte,128)
     r.WatchChannel(ChannelMsg, cc)
@@ -148,7 +148,7 @@ func main() {
 Unsubscribe 退订频道
 
 ```golang
-func main() {
+func do() {
     ...
     //退订频道ChannelMsg
     r.Unsubscribe(ChannelMsg)
@@ -161,7 +161,7 @@ func main() {
 Notify 不回复请求，申请一服务处理。
 
 ```golang
-func main() {
+func do() {
     ...
     //往频道ChannelMsg发送[]byte("Hellow")
     err := r.Notify(ChannelMsg, []byte("Hellow"))
@@ -175,7 +175,7 @@ func main() {
 Call 请求，申请一服务处理，使用Call，服务需调用Reply。
 
 ```golang
-func main() {
+func do() {
     ...
     //注册ChannelRpl的处理函数pong
     r.Subscribe(ChannelRpl, pong)
@@ -191,7 +191,7 @@ func pong(ctx *domi.ContextMQ) {
 ```
 
 ```golang
-func main() {
+func do() {
     ...
     cc := make(chan []byte)
     r.WatchChannel(ChannelRpl, cc)
@@ -208,7 +208,7 @@ func main() {
 Publish 发布，通知所有订阅频道的节点。
 
 ```golang
-func main() {
+func do() {
     ...
     //往频道ChannelMsg广播[]byte("Hellow")
     if err := r.Publish(ChannelMsg, []byte("Hellow")); err != nil {
@@ -221,7 +221,7 @@ func main() {
 Ventilator 开始，pipeline模式，数据在不同服务之间传递，后续服务需调用Next，以将服务传递给下一个服务，最后一个服务不可调用Next。
 
 ```golang
-func main() {
+func do() {
     ...
     //后续服务通过注册频道Channel1、 Channel2、 Channel3来完成处理。
     if err :=r.Ventilator([]uint16{Channel1, Channel2, Channel3}, []byte("Pipeline")); err != nil {

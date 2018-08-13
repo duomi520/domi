@@ -9,7 +9,7 @@ etcd
 ## 运行 room
 
 ```bash
-cd examples\chat\simpleRoom
+cd examples\chat\efficientlyRoom
 go build room.go
 room
 ```

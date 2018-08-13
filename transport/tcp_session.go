@@ -43,12 +43,12 @@ func NewSessionTCP(conn *net.TCPConn) *SessionTCP {
 //Close 关闭
 func (s *SessionTCP) Close() {
 	s.closeOnce.Do(func() {
+		s.Conn.Close()
 		util.BytesPoolPut(s.rBuf)
 		if s.wSlot != nil {
 			util.BytesPoolPut(s.wSlot.buf)
 			s.wSlot = nil
 		}
-		s.Conn.Close()
 		s = nil
 	})
 }

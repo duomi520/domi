@@ -35,7 +35,7 @@ func main() {
 	app.RunAssembly(gate)
 	node = domi.NewNode(ctx, app.Stop, "gate V1.0.1", ":7081", ":9521", []string{"localhost:2379"})
 	app.RunAssembly(node)
-	node.SimpleProcess(ChannelRoom, gate.rev)
+	node.Subscribe(ChannelRoom, gate.rev)
 	defer node.Unsubscribe(ChannelRoom)
 	httpServer := &http.Server{
 		Addr:           ":8080",

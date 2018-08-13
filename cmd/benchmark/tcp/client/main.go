@@ -50,7 +50,7 @@ func clientN(num int) {
 	sd := util.NewDispatcher("TCPClient", 128)
 	go sd.Run()
 	defer sd.Close()
-	loop := 50000000
+	loop := 500000000
 	//	f, _ := os.Create("profile.mem")
 	//	defer f.Close()
 	var err error

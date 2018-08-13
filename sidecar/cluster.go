@@ -31,7 +31,7 @@ func (c *cluster) AskOne(channel uint16, fs transport.FrameSlice) error {
 			s := atomic.LoadUint32(&c.sessionsState[id])
 			m := (*member)(atomic.LoadPointer(&c.sessions[id]))
 			if m != nil && s == StateWork {
-				err = m.WriteFrameDataPromptly(fs)
+				err = m.WriteFrameDataToCache(fs)
 				if err == nil {
 					return err
 				}
@@ -59,7 +59,7 @@ func (c *cluster) AskAll(channel uint16, fs transport.FrameSlice) error {
 			s := atomic.LoadUint32(&c.sessionsState[id])
 			m := (*member)(atomic.LoadPointer(&c.sessions[id]))
 			if m != nil && s == StateWork {
-				err = m.WriteFrameDataPromptly(fs) //只记录最后一个错误
+				err = m.WriteFrameDataToCache(fs) //只记录最后一个错误
 			}
 		}
 	} else {

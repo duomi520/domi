@@ -17,7 +17,7 @@ func main() {
 	app := domi.NewMaster()
 	r := domi.NewNode(app.Ctx, app.Stop, "server v1.0.0", ":7080", ":9500", []string{"localhost:2379"})
 	app.RunAssembly(r)
-	r.SimpleProcess(ChannelMsg, ping)
+	r.Subscribe(ChannelMsg, ping)
 	app.Guard()
 }
 func ping(ctx *domi.ContextMQ) {

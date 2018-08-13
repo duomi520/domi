@@ -32,9 +32,9 @@ func main() {
 	n := domi.NewNode(ctx, app.Stop, "room V1.0.1", ":7082", ":9522", []string{"localhost:2379"})
 	app.RunAssembly(n)
 	//注册频道
-	n.SimpleProcess(ChannelMsg, r.rec)
-	n.SimpleProcess(ChannelJoin, r.join)
-	n.SimpleProcess(ChannelLeave, r.leave)
+	n.Subscribe(ChannelMsg, r.rec)
+	n.Subscribe(ChannelJoin, r.join)
+	n.Subscribe(ChannelLeave, r.leave)
 	app.Guard()
 }
 
