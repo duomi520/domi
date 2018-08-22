@@ -39,7 +39,7 @@ func Test_tcpServer(t *testing.T) {
 func Test_tcpServerPingPong(t *testing.T) {
 	sd := util.NewDispatcher("TCP", 32)
 	go sd.Run()
-	loop1 := 5000
+	loop1 := 50000
 	loop2 := loop1 * 2
 	ctx, ctxExitFunc := context.WithCancel(context.Background())
 	h := NewHandler()
@@ -68,7 +68,7 @@ func Test_tcpServerPingPong(t *testing.T) {
 			t.Error(err)
 		}
 	}
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 	c.Csession.Close()
 	time.Sleep(150 * time.Millisecond)
 	ctxExitFunc()

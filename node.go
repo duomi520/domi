@@ -79,7 +79,7 @@ func (wcs channelWrapper) watchChannelWrapper(s transport.Session) error {
 }
 
 //SimpleProcess 订阅频道，Process共用tcp读协程，不可有长时间的阻塞或IO。TODO 删除
-/*func (n *Node) SimpleProcess(channel uint16, f func(*ContextMQ)) {
+func (n *Node) SimpleProcess(channel uint16, f func(*ContextMQ)) {
 	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 3)
 	pw := processWrapper{
 		n: n,
@@ -87,7 +87,6 @@ func (wcs channelWrapper) watchChannelWrapper(s transport.Session) error {
 	}
 	n.sidecar.HandleFunc(channel, pw.processWrapper)
 }
-*/
 
 func (pw processWrapper) processWrapper(s transport.Session) error {
 	c := &ContextMQ{

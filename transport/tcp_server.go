@@ -101,7 +101,6 @@ func tcpReceive(s *ServerTCP, conn *net.TCPConn) {
 	session.dispatcher = s.dispatcher
 	s.Add(1)
 	defer func() {
-		session.Wait()
 		session.Close()
 		s.Done()
 	}()

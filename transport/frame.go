@@ -78,9 +78,6 @@ func NewFrameSlice(ft uint16, d, ex []byte) FrameSlice {
 //DecodeByBytes 解码 引用原地址
 func DecodeByBytes(b []byte) FrameSlice {
 	f := FrameSlice{}
-	if len(b) < FrameHeadLength {
-		return f
-	}
 	f.splitLength = len(b) - int(util.BytesToUint16(b[4:6]))
 	f.base = b
 	return f

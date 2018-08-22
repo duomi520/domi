@@ -2,6 +2,7 @@ package transport
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -10,6 +11,30 @@ import (
 
 	"github.com/duomi520/domi/util"
 )
+
+//BytesPoolLenght 长度
+const BytesPoolLenght int = 16384
+
+//bytesPool bytesPool 池
+var bytesPool sync.Pool
+
+func init() {
+	bytesPool.New = func() interface{} {
+		b := make([]byte, BytesPoolLenght)
+		return b[:]
+	}
+}
+
+//BytesPoolGet 取一个
+func BytesPoolGet() []byte {
+	b := bytesPool.Get().([]byte)
+	return b[:]
+}
+
+//BytesPoolPut 还一个
+func BytesPoolPut(b []byte) {
+	bytesPool.Put(b)
+}
 
 //定义错误
 var (
@@ -23,7 +48,7 @@ type SessionTCP struct {
 	rBuf       []byte
 	w          int //rBuf 读位置序号
 	r          int //rBuf 写位置序号
-	wSlot      *slot
+	wSlot      unsafe.Pointer
 	closeOnce  sync.Once
 	sync.WaitGroup
 }
@@ -32,24 +57,30 @@ type SessionTCP struct {
 func NewSessionTCP(conn *net.TCPConn) *SessionTCP {
 	s := &SessionTCP{
 		Conn: conn,
-		rBuf: util.BytesPoolGet(),
+		rBuf: BytesPoolGet(),
 		r:    0,
 		w:    0,
 	}
-	s.wSlot = newSlot(s)
+	ws := slot{
+		session:         s,
+		buf:             BytesPoolGet(),
+		allotCursor:     0,
+		availableCursor: 0,
+		count:           0,
+	}
+	s.wSlot = unsafe.Pointer(&ws)
 	return s
 }
 
 //Close 关闭
 func (s *SessionTCP) Close() {
 	s.closeOnce.Do(func() {
+		s.Wait()
 		s.Conn.Close()
-		util.BytesPoolPut(s.rBuf)
-		if s.wSlot != nil {
-			util.BytesPoolPut(s.wSlot.buf)
-			s.wSlot = nil
-		}
-		s = nil
+		time.AfterFunc(time.Second, func() {
+			BytesPoolPut(s.rBuf)
+			BytesPoolPut((*slot)(s.wSlot).buf)
+		})
 	})
 }
 
@@ -114,21 +145,27 @@ func (s *SessionTCP) WriteFrameDataPromptly(f FrameSlice) error {
 
 //WriteFrameDataToCache 写入发送缓存
 func (s *SessionTCP) WriteFrameDataToCache(f FrameSlice) error {
-loop:
-	myslot := (*slot)(atomic.LoadPointer((*unsafe.Pointer)(unsafe.Pointer(&s.wSlot))))
-	atomic.AddInt32(&myslot.count, 1)
 	length := int32(f.GetFrameLength())
+loop:
+	myslot := (*slot)(atomic.LoadPointer(&s.wSlot))
+	atomic.AddInt32(&myslot.count, 1)
 	end := atomic.AddInt32(&myslot.allotCursor, length)
 	start := end - length
-	if end >= int32(util.BytesPoolLenght) {
+	if end > int32(BytesPoolLenght) {
 		//申请的地址超出边界
-		if start >= int32(util.BytesPoolLenght) {
+		if start >= int32(BytesPoolLenght) {
 			atomic.AddInt32(&myslot.count, -1)
 			goto loop
 		}
 		//刚好越界触发
-		ns := newSlot(s)
-		atomic.SwapPointer((*unsafe.Pointer)(unsafe.Pointer(&s.wSlot)), unsafe.Pointer(ns))
+		ns := slot{
+			session:         s,
+			buf:             BytesPoolGet(),
+			allotCursor:     0,
+			availableCursor: 0,
+			count:           0,
+		}
+		atomic.SwapPointer(&s.wSlot, unsafe.Pointer(&ns))
 		atomic.AddInt32(&myslot.count, -1)
 		goto loop
 	}
@@ -160,25 +197,24 @@ func (s *SessionTCP) readUint32() (uint32, error) {
 type slot struct {
 	session         *SessionTCP
 	buf             []byte
+	_padding0       [8]uint64
 	allotCursor     int32 //申请位置
+	_padding1       [8]uint64
 	availableCursor int32 //已提交位置
+	_padding2       [8]uint64
 	count           int32 //占用数
-}
-
-func newSlot(s *SessionTCP) *slot {
-	return &slot{
-		session:         s,
-		buf:             util.BytesPoolGet(),
-		allotCursor:     0,
-		availableCursor: 0,
-		count:           0,
-	}
 }
 
 //WorkFunc 发送
 func (ws *slot) WorkFunc() {
-	ns := newSlot(ws.session)
-	atomic.SwapPointer((*unsafe.Pointer)(unsafe.Pointer(&(ws.session.wSlot))), unsafe.Pointer(ns))
+	ns := slot{
+		session:         ws.session,
+		buf:             BytesPoolGet(),
+		allotCursor:     0,
+		availableCursor: 0,
+		count:           0,
+	}
+	atomic.SwapPointer(&ws.session.wSlot, unsafe.Pointer(&ns))
 	time.Sleep(time.Microsecond)
 	//自旋等待其它协程提交
 	for atomic.LoadInt32(&ws.count) != 0 {
@@ -186,14 +222,17 @@ func (ws *slot) WorkFunc() {
 	}
 	if ws.availableCursor >= int32(FrameHeadLength) {
 		if err := ws.session.Conn.SetWriteDeadline(time.Now().Add(DefaultDeadlineDuration)); err != nil {
+			fmt.Println("WorkFunc|a:", err.Error())
 			goto end
 		}
 		if _, err := ws.session.Conn.Write(ws.buf[:ws.availableCursor]); err != nil {
+			fmt.Println("WorkFunc|b:", err.Error())
 			goto end
 		}
+	} else {
+		fmt.Println("WorkFunc|c:", ws.availableCursor)
 	}
 end:
-	util.BytesPoolPut(ws.buf)
+	BytesPoolPut(ws.buf)
 	ws.session.Done()
-	ws = nil
 }

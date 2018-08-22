@@ -47,7 +47,7 @@ func dial() *transport.SessionTCP {
 var clientNwg sync.WaitGroup
 
 func clientN(num int) {
-	sd := util.NewDispatcher("TCPClient", 128)
+	sd := util.NewDispatcher("TCPClient", 256)
 	go sd.Run()
 	defer sd.Close()
 	loop := 500000000
@@ -81,11 +81,11 @@ func clientN(num int) {
 	qps := float64(loop) / end.Sub(start).Seconds()
 	fmt.Printf("%d个连接及协程:%6.0f\n", num, qps)
 	//	pprof.WriteHeapProfile(f)
-	time.Sleep(time.Second)
 	for i := 0; i < num; i++ {
 		cs[i].Csession.Close()
 	}
 	cs = nil
+	time.Sleep(1 * time.Second)
 }
 
 func pongFunc(s transport.Session) error {
