@@ -20,6 +20,20 @@ const (
 	StatePause
 )
 
+//Specify 请求
+func (c *cluster) Specify(id, channel uint16, fs transport.FrameSlice) error {
+	var err error
+	s := atomic.LoadUint32(&c.sessionsState[id])
+	m := (*member)(atomic.LoadPointer(&c.sessions[id]))
+	if m != nil && s == StateWork {
+		err = m.WriteFrameDataPromptly(fs) //TODO
+		if err == nil {
+			return err
+		}
+	}
+	return err
+}
+
 //AskOne 请求某一个
 func (c *cluster) AskOne(channel uint16, fs transport.FrameSlice) error {
 	var err error
@@ -31,7 +45,7 @@ func (c *cluster) AskOne(channel uint16, fs transport.FrameSlice) error {
 			s := atomic.LoadUint32(&c.sessionsState[id])
 			m := (*member)(atomic.LoadPointer(&c.sessions[id]))
 			if m != nil && s == StateWork {
-				err = m.WriteFrameDataToCache(fs)
+				err = m.WriteFrameDataPromptly(fs) //TODO
 				if err == nil {
 					return err
 				}
@@ -59,7 +73,7 @@ func (c *cluster) AskAll(channel uint16, fs transport.FrameSlice) error {
 			s := atomic.LoadUint32(&c.sessionsState[id])
 			m := (*member)(atomic.LoadPointer(&c.sessions[id]))
 			if m != nil && s == StateWork {
-				err = m.WriteFrameDataToCache(fs) //只记录最后一个错误
+				err = m.WriteFrameDataPromptly(fs) //只记录最后一个错误
 			}
 		}
 	} else {

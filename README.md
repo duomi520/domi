@@ -119,43 +119,6 @@ func ping(ctx *domi.ContextMQ) {
 
 ## API样例
 
-### 订阅频道
-
-Subscribe 订阅频道。
-
-```golang
-func do() {
-    ...
-    //注册ChannelRpl的处理函数，回复[]byte("pong")
-    r.Subscribe(ChannelMsg, func(c *domi.ContextMQ) {
-        c.Reply([]byte("pong"))
-        })
-    ...
-}
-```
-
-WatchChannel 监听频道 将读取到数据存入chan
-
-```golang
-func do() {
-    ...
-    cc := make(chan []byte,128)
-    r.WatchChannel(ChannelMsg, cc)
-    ...
-}
-```
-
-Unsubscribe 退订频道
-
-```golang
-func do() {
-    ...
-    //退订频道ChannelMsg
-    r.Unsubscribe(ChannelMsg)
-    ...
-}
-```
-
 ### 往频道发送请求
 
 Notify 不回复请求，申请一服务处理。
@@ -227,6 +190,43 @@ func do() {
     if err :=r.Ventilator([]uint16{Channel1, Channel2, Channel3}, []byte("Pipeline")); err != nil {
         fmt.Println(err.Error())
     }
+    ...
+}
+```
+
+### 订阅频道
+
+Subscribe 订阅频道，共用tcp读协程，不可有长时间的阻塞或IO。
+
+```golang
+func do() {
+    ...
+    //注册ChannelRpl的处理函数，回复[]byte("pong")
+    r.Subscribe(ChannelMsg, func(c *domi.ContextMQ) {
+        c.Reply([]byte("pong"))
+        })
+    ...
+}
+```
+
+WatchChannel 监听频道，将读取到数据存入chan。
+
+```golang
+func do() {
+    ...
+    cc := make(chan []byte,128)
+    r.WatchChannel(ChannelMsg, cc)
+    ...
+}
+```
+
+Unsubscribe 退订频道。
+
+```golang
+func do() {
+    ...
+    //退订频道ChannelMsg
+    r.Unsubscribe(ChannelMsg)
     ...
 }
 ```

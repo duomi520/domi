@@ -3,7 +3,6 @@ package domi
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 	"unsafe"
 
@@ -78,8 +77,8 @@ func (wcs channelWrapper) watchChannelWrapper(s transport.Session) error {
 	return nil
 }
 
-//SimpleProcess 订阅频道，Process共用tcp读协程，不可有长时间的阻塞或IO。TODO 删除
-func (n *Node) SimpleProcess(channel uint16, f func(*ContextMQ)) {
+//Subscribe 订阅频道，Process共用tcp读协程，不可有长时间的阻塞或IO。
+func (n *Node) Subscribe(channel uint16, f func(*ContextMQ)) {
 	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 3)
 	pw := processWrapper{
 		n: n,
@@ -88,42 +87,15 @@ func (n *Node) SimpleProcess(channel uint16, f func(*ContextMQ)) {
 	n.sidecar.HandleFunc(channel, pw.processWrapper)
 }
 
+//
 func (pw processWrapper) processWrapper(s transport.Session) error {
 	c := &ContextMQ{
-		Request:  s.GetFrameSlice().GetData(),
-		ex:       s.GetFrameSlice().GetExtend(),
-		response: s.WriteFrameDataPromptly,
+		Request: s.GetFrameSlice().GetData(),
+		ex:      s.GetFrameSlice().GetExtend(),
 	}
 	//修改slice 的cap
 	r := (*[3]uintptr)(unsafe.Pointer(&c.Request))
 	r[2] = r[1]
-	c.Node = pw.n
-	pw.f(c)
-	return nil
-}
-
-//Subscribe 订阅频道，支持长时间的阻塞或IO。
-func (n *Node) Subscribe(channel uint16, f func(*ContextMQ)) {
-	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 3)
-	pw := processWrapper{
-		n: n,
-		f: f,
-	}
-	n.sidecar.HandleFunc(channel, pw.completeProcessWrapper)
-}
-
-func (pw processWrapper) completeProcessWrapper(s transport.Session) error {
-	fd := s.GetFrameSlice().GetData()
-	fe := s.GetFrameSlice().GetExtend()
-	data := make([]byte, len(fd))
-	copy(data, fd)
-	ex := make([]byte, len(fe))
-	copy(ex, fe)
-	c := &ContextMQ{
-		Request:  data,
-		ex:       ex,
-		response: s.WriteFrameDataPromptly,
-	}
 	c.Node = pw.n
 	pw.f(c)
 	return nil
@@ -136,8 +108,9 @@ func (n *Node) Unsubscribe(channel uint16) {
 
 //Call 请求	request-reply模式 ，使用Call，服务需调用Reply。
 func (n *Node) Call(channel uint16, data []byte, reply uint16) error {
-	ex := make([]byte, 2)
-	util.CopyUint16(ex, reply)
+	ex := make([]byte, 4)
+	util.CopyUint16(ex[:2], uint16(n.sidecar.MachineID))
+	util.CopyUint16(ex[2:], reply)
 	fs := transport.NewFrameSlice(channel, data, ex)
 	return n.sidecar.AskOne(channel, fs)
 }
@@ -172,22 +145,30 @@ func (n *Node) Publish(channel uint16, data []byte) error {
 //ContextMQ 上下文
 type ContextMQ struct {
 	*Node
-	Request  []byte
-	ex       []byte
-	response func(transport.FrameSlice) error
+	Request []byte
+	ex      []byte
 }
 
 //Reply 回复 request-reply模式 ，源使用Call，目标需调用Reply
 func (c *ContextMQ) Reply(data []byte) error {
 	if c.ex == nil {
-		return fmt.Errorf("Reply|该请求无需回复。")
+		return errors.New("Reply|需ex。")
 	}
-	fs := transport.NewFrameSlice(util.BytesToUint16(c.ex), data, nil)
-	return c.response(fs)
+	if len(c.ex) != 4 {
+		return errors.New("Reply|ex长度不为4。")
+	}
+	id := util.BytesToUint16(c.ex[:2])
+	channel := util.BytesToUint16(c.ex[2:])
+	fs := transport.NewFrameSlice(channel, data, nil)
+	c.sidecar.Specify(id, channel, fs)
+	return nil
 }
 
 //Next 下一个 pipeline模式 发布使用Ventilator，后续服务用Next，最后一个服务不得使用Next
 func (c *ContextMQ) Next(data []byte) error {
+	if c.ex == nil {
+		return errors.New("Next|需ex。")
+	}
 	if len(c.ex) < 2 {
 		return errors.New("Next|最后一个服务不得使用Next。")
 	}

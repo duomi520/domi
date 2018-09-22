@@ -104,3 +104,16 @@ func CopyInt64(dst []byte, n int64) {
 	c[7] = byte(n >> 56)
 	copy(dst[:], c[:])
 }
+
+//Uint16Equal 判断两个切片的内容是否完全相同
+func Uint16Equal(a, b []uint16) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

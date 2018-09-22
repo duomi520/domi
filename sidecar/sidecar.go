@@ -14,7 +14,7 @@ import (
 
 //Sidecar 边车
 type Sidecar struct {
-	ctx      context.Context
+	Ctx      context.Context
 	exitFunc func()
 
 	Dispatcher *util.Dispatcher
@@ -36,7 +36,7 @@ type Sidecar struct {
 func NewSidecar(ctx context.Context, cancel func(), name, HTTPPort, TCPPort string, operation interface{}) *Sidecar {
 	logger, _ := util.NewLogger(util.DebugLevel, "")
 	s := &Sidecar{
-		ctx:       ctx,
+		Ctx:       ctx,
 		exitFunc:  cancel,
 		Handler:   transport.NewHandler(),
 		readyChan: make(chan struct{}),
@@ -48,7 +48,7 @@ func NewSidecar(ctx context.Context, cancel func(), name, HTTPPort, TCPPort stri
 	if err != nil {
 		s.Logger.Fatal(err)
 	}
-	s.Dispatcher = util.NewDispatcher("TCP", 128)
+	s.Dispatcher = util.NewDispatcher("TCP", 256)
 	//tcp支持
 	s.tcpServer = transport.NewServerTCP(ctx, TCPPort, s.Handler, s.Dispatcher)
 	if s.tcpServer == nil {
@@ -114,7 +114,7 @@ func (s *Sidecar) Run() {
 				}
 				i++
 			}
-		case <-s.ctx.Done():
+		case <-s.Ctx.Done():
 			s.Logger.Info("Run|等待子模块关闭……")
 			s.SetState(StateDie)
 			s.Wait()
@@ -143,7 +143,7 @@ func (s *Sidecar) dialNode(heartbeatSlice []*transport.ClientTCP) {
 	data := make([]byte, 2)
 	fs := transport.NewFrameSlice(transport.FrameTypeNodeName, data, nil)
 	for i, node := range s.GetInitAddress() {
-		cli, err := transport.NewClientTCP(s.ctx, s.getURLTCP(node), s.Handler, s.Dispatcher)
+		cli, err := transport.NewClientTCP(s.Ctx, s.getURLTCP(node), s.Handler, s.Dispatcher)
 		if err != nil {
 			s.Logger.Error("Run|错误：" + err.Error())
 			continue

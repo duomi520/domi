@@ -90,7 +90,6 @@ func (d *Dispatcher) Run() {
 		//多路复用，运行任务的顺序是打乱的。
 		select {
 		case jobChannel := <-d.workerQueue:
-			//放入池。
 			workerPool = append(workerPool, jobChannel)
 		case <-snippet.C:
 			js := len(d.jobSlice)

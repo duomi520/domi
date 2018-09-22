@@ -13,7 +13,7 @@ import (
 )
 
 //BytesPoolLenght 长度
-const BytesPoolLenght int = 16384
+const BytesPoolLenght int = 8192 //16384
 
 //bytesPool bytesPool 池
 var bytesPool sync.Pool

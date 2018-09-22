@@ -95,6 +95,9 @@ func (f FrameSlice) GetExtend() []byte { return f.base[f.splitLength:] }
 //GetAll 读取所有
 func (f FrameSlice) GetAll() []byte { return f.base }
 
+//GetFrameType 读取
+func (f FrameSlice) GetFrameType() uint16 { return util.BytesToUint16(f.base[6:8]) }
+
 //WriteToBytes 写入目标切片
 func (f FrameSlice) WriteToBytes(b []byte) int {
 	if len(f.base) > len(b) {
