@@ -1,16 +1,15 @@
 package domi
 
 import (
-	"sync"
-	"time"
-
 	"github.com/duomi520/domi/transport"
 	"github.com/duomi520/domi/util"
+	"sync"
+	"time"
 )
 
-//Serial 串行模式
+//Serial 串行处理
 //一个协程处理一个serial,以避免锁的问题，同时减少协程切换，提高cpu利用率。
-//按时间轮来分配cpu，故不可用于cpu密集计算的场景。
+//按时间轮来分配cpu，不适用于cpu密集计算或长IO场景。
 type Serial struct {
 	SnippetDuration  time.Duration
 	contextMQHandler [65536]interface{}
@@ -116,7 +115,7 @@ func (s *Serial) Subscribe(channel uint16, f func(*ContextMQ)) {
 	n.sidecar.HandleFunc(channel, s.serialProcessWrapper)
 }
 
-//SubscribeRace 订阅频道,某一频道收到信息后，执行f，需在serial.run()运行前执行,线程不安全。
+//SubscribeRace 订阅频道,某一频道收到信息后，执行f，需在serial.run()运行前执行（线程不安全）。
 func (s *Serial) SubscribeRace(channels []uint16, f func(*ContextMQ)) {
 	n := s.Node
 	for _, a := range channels {
@@ -163,7 +162,7 @@ func (bi bagAndIndex) serialProcessWrapper(c *ContextMQ) {
 	}
 }
 
-//SubscribeAll 订阅频道,全部频道都收到信息后，执行f，需在serial.run()运行前执行,线程不安全。
+//SubscribeAll 订阅频道,全部频道都收到信息后，执行f，需在serial.run()运行前执行（线程不安全）。
 func (s *Serial) SubscribeAll(channels []uint16, fs func(*ContextMQs)) {
 	n := s.Node
 	b := &bag{

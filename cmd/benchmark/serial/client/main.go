@@ -2,10 +2,12 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/duomi520/domi"
+	"github.com/duomi520/domi/util"
 )
 
 //定义
@@ -16,6 +18,7 @@ const (
 
 func main() {
 	app := domi.NewMaster()
+	app.Logger.SetLevel(util.ErrorLevel)
 	n := domi.NewNode(app.Ctx, app.Stop, "client V1.0.0", ":7081", ":9501", []string{"localhost:2379"})
 	app.RunAssembly(n)
 	s := domi.NewSerial(n)
@@ -29,7 +32,7 @@ func main() {
 var clientNwg sync.WaitGroup
 
 func clientN(s *domi.Serial, num int) {
-	loop := 2000
+	loop := 20000
 	clientNwg.Add(loop * num)
 	start := time.Now()
 	for j := 0; j < num; j++ {
@@ -37,7 +40,7 @@ func clientN(s *domi.Serial, num int) {
 			for i := 0; i < loop; i++ {
 				if err := s.Call(ChannelMsg, []byte("ping"), ChannelRpl); err != nil {
 					fmt.Println(err)
-					break
+					os.Exit(2)
 				}
 
 			}

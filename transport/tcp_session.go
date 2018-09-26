@@ -146,15 +146,18 @@ func (s *SessionTCP) WriteFrameDataPromptly(f FrameSlice) error {
 //WriteFrameDataToCache 写入发送缓存
 func (s *SessionTCP) WriteFrameDataToCache(f FrameSlice) error {
 	length := int32(f.GetFrameLength())
+	var myslot *slot
+	var end, start int32
 loop:
-	myslot := (*slot)(atomic.LoadPointer(&s.wSlot))
+	myslot = (*slot)(atomic.LoadPointer(&s.wSlot))
 	atomic.AddInt32(&myslot.count, 1)
-	end := atomic.AddInt32(&myslot.allotCursor, length)
-	start := end - length
+	end = atomic.AddInt32(&myslot.allotCursor, length)
+	start = end - length
 	if end > int32(BytesPoolLenght) {
 		//申请的地址超出边界
 		if start >= int32(BytesPoolLenght) {
 			atomic.AddInt32(&myslot.count, -1)
+			time.Sleep(time.Microsecond)
 			goto loop
 		}
 		//刚好越界触发

@@ -26,7 +26,7 @@ func (c *cluster) Specify(id, channel uint16, fs transport.FrameSlice) error {
 	s := atomic.LoadUint32(&c.sessionsState[id])
 	m := (*member)(atomic.LoadPointer(&c.sessions[id]))
 	if m != nil && s == StateWork {
-		err = m.WriteFrameDataPromptly(fs) //TODO
+		err = m.WriteFrameDataToCache(fs)
 		if err == nil {
 			return err
 		}
@@ -45,19 +45,19 @@ func (c *cluster) AskOne(channel uint16, fs transport.FrameSlice) error {
 			s := atomic.LoadUint32(&c.sessionsState[id])
 			m := (*member)(atomic.LoadPointer(&c.sessions[id]))
 			if m != nil && s == StateWork {
-				err = m.WriteFrameDataPromptly(fs) //TODO
+				err = m.WriteFrameDataToCache(fs)
 				if err == nil {
 					return err
 				}
 			}
 			count++
 			if count > l {
-				err = fmt.Errorf("AskOne|bucket.sets no find %d,id=%d,l=%d,ERR:%s", channel, id, l, err.Error())
+				err = fmt.Errorf("AskOne|bucket.sets未发现 %d,id=%d,l=%d,ERR:%s", channel, id, l, err.Error())
 				break
 			}
 		}
 	} else {
-		err = fmt.Errorf("AskOne|bucket no find %d", channel)
+		err = fmt.Errorf("AskOne|bucket 未发现频道 %d", channel)
 	}
 	return err
 }
@@ -73,11 +73,12 @@ func (c *cluster) AskAll(channel uint16, fs transport.FrameSlice) error {
 			s := atomic.LoadUint32(&c.sessionsState[id])
 			m := (*member)(atomic.LoadPointer(&c.sessions[id]))
 			if m != nil && s == StateWork {
-				err = m.WriteFrameDataPromptly(fs) //只记录最后一个错误
+				//只记录最后一个错误
+				err = m.WriteFrameDataToCache(fs)
 			}
 		}
 	} else {
-		err = fmt.Errorf("AskAll|bucket no find %d", channel)
+		err = fmt.Errorf("AskAll|bucket 未发现频道 %d", channel)
 	}
 	return err
 }
@@ -226,7 +227,7 @@ func (c *cluster) Run() {
 	}
 }
 
-//
+//TODO 优化
 func (c *cluster) initStateAndChannels() error {
 	s, err := c.GetKey(context.TODO(), "state/")
 	if err != nil {

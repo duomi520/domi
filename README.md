@@ -258,6 +258,72 @@ func do(c *domi.ContextMQ) {
 }
 ```
 
+## 串行模式
+
+单一协程处理，可以以单线程的方式写代码，以避免使用锁，同时减少协程切换，提高cpu利用率。适应于频繁IO及同步操作，按时间轮来分配cpu，不适用于cpu密集计算或长IO场景。
+
+启动
+
+```golang
+func do() {
+    ...
+    app := domi.NewMaster()
+    n := domi.NewNode(app.Ctx, app.Stop, "client V1.0.0", ":7081", ":9501", []string{"localhost:2379"})
+    app.RunAssembly(n)
+    //继承自Node
+    s := domi.NewSerial(n)
+    app.RunAssembly(s)
+    app.Guard()
+    ...
+}
+```
+
+关闭
+
+```golang
+func do() {
+    ...
+    s.Close()
+    ...
+}
+```
+
+### 专属API
+
+SubscribeRace 订阅频道,某一频道收到信息后，执行处理函数，需在串行模式运行前执行（线程不安全）。
+
+```golang
+func do() {
+    ...
+    s.SubscribeRace([]uint16{1201, 1202, 1203}, func(c *domi.ContextMQ) {doSomething})
+    ...
+    app.RunAssembly(s)
+    ...
+}
+```
+
+SubscribeAll 订阅频道,全部频道都收到信息后，执行处理函数，需在串行模式运行前执行（线程不安全）。
+
+```golang
+func do() {
+    ...
+    s.SubscribeAll([]uint16{1201, 1202, 1203}, func(c *domi.ContextMQ) {doSomething})
+    ...
+    app.RunAssembly(s)
+    ...
+}
+```
+
+UnsubscribeGroup 退订频道。
+
+```golang
+func do() {
+    ...
+    s.UnsubscribeGroup([]uint16{1201, 1202, 1203})
+    ...
+}
+```
+
 ## 版本
 
 * 在etcd版本3.3.4上完成的测试。
