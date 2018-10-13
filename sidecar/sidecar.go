@@ -98,7 +98,7 @@ func (s *Sidecar) Run() {
 	//与其它服务器建立连接
 	s.dialNode(heartbeatSlice)
 	s.RunAssembly(s.cluster)
-	s.SetState(StateWork)
+	s.SetState(util.StateWork)
 	close(s.readyChan)
 	for {
 		select {
@@ -116,7 +116,7 @@ func (s *Sidecar) Run() {
 			}
 		case <-s.Ctx.Done():
 			s.Logger.Info("Run|等待子模块关闭……")
-			s.SetState(StateDie)
+			s.SetState(util.StateDie)
 			s.Wait()
 			s.httpServer.Shutdown(context.TODO())
 			s.Dispatcher.Close()

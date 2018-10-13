@@ -13,19 +13,12 @@ import (
 	"github.com/duomi520/domi/util"
 )
 
-//定义状态
-const (
-	StateDie uint32 = 1 + iota
-	StateWork
-	StatePause
-)
-
 //Specify 请求
 func (c *cluster) Specify(id, channel uint16, fs transport.FrameSlice) error {
 	var err error
 	s := atomic.LoadUint32(&c.sessionsState[id])
 	m := (*member)(atomic.LoadPointer(&c.sessions[id]))
-	if m != nil && s == StateWork {
+	if m != nil && s == util.StateWork {
 		err = m.WriteFrameDataToCache(fs)
 		if err == nil {
 			return err
@@ -44,7 +37,7 @@ func (c *cluster) AskOne(channel uint16, fs transport.FrameSlice) error {
 			id, l := b.next()
 			s := atomic.LoadUint32(&c.sessionsState[id])
 			m := (*member)(atomic.LoadPointer(&c.sessions[id]))
-			if m != nil && s == StateWork {
+			if m != nil && s == util.StateWork {
 				err = m.WriteFrameDataToCache(fs)
 				if err == nil {
 					return err
@@ -72,7 +65,7 @@ func (c *cluster) AskAll(channel uint16, fs transport.FrameSlice) error {
 			id := b.sets[i]
 			s := atomic.LoadUint32(&c.sessionsState[id])
 			m := (*member)(atomic.LoadPointer(&c.sessions[id]))
-			if m != nil && s == StateWork {
+			if m != nil && s == util.StateWork {
 				//只记录最后一个错误
 				err = m.WriteFrameDataToCache(fs)
 			}
@@ -92,9 +85,9 @@ type cluster struct {
 	sessionsState [1024]uint32          //状态		原子操作
 	channels      [65536]unsafe.Pointer //*bucket	原子操作
 
-	state     uint32 //状态
 	machineID uint16
 
+	state     uint32 //状态
 	stopChan  chan struct{}
 	readyChan chan struct{}
 
@@ -188,11 +181,11 @@ func (c *cluster) Run() {
 			case 1:
 				atomic.StoreUint32(&c.sessionsState[sc.id], sc.state)
 			case 3: //PUT
-				if c.state != StateDie {
+				if c.state != util.StateDie {
 					c.state = sc.state
 					util.CopyUint32(stateValue[2:6], c.state)
 					c.PutKey(context.TODO(), string(stateKey), string(stateValue))
-					if sc.state == StateDie {
+					if sc.state == util.StateDie {
 						c.stopCluster()
 					}
 				}

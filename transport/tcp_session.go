@@ -145,6 +145,9 @@ func (s *SessionTCP) WriteFrameDataPromptly(f FrameSlice) error {
 
 //WriteFrameDataToCache 写入发送缓存
 func (s *SessionTCP) WriteFrameDataToCache(f FrameSlice) error {
+	if f.GetFrameLength() >= BytesPoolLenght {
+		return s.WriteFrameDataPromptly(f)
+	}
 	length := int32(f.GetFrameLength())
 	var myslot *slot
 	var end, start int32

@@ -45,8 +45,7 @@ func NewHandler() *Handler {
 	return h
 }
 
-//HandleFunc 添加处理器 线程不安全。
-//处理函数避免阻塞。
+//HandleFunc 添加处理器
 func (h *Handler) HandleFunc(u16 uint16, f func(Session) error) {
 	h.frameWorker[u16] = f
 }

@@ -39,17 +39,17 @@ func (n *Node) WaitInit() {
 
 //Pause 使服务暂停
 func (n *Node) Pause() {
-	n.sidecar.SetState(sidecar.StatePause)
+	n.sidecar.SetState(util.StatePause)
 }
 
 //Work 使服务工作
 func (n *Node) Work() {
-	n.sidecar.SetState(sidecar.StateWork)
+	n.sidecar.SetState(util.StateWork)
 }
 
 //IsWorking 是否工作状态
 func (n *Node) IsWorking() bool {
-	return n.sidecar.GetState() == sidecar.StateWork
+	return n.sidecar.GetState() == util.StateWork
 }
 
 type channelWrapper struct {
@@ -103,6 +103,7 @@ func (pw processWrapper) processWrapper(s transport.Session) error {
 
 //Unsubscribe 退订频道
 func (n *Node) Unsubscribe(channel uint16) {
+	n.sidecar.HandleFunc(channel, nil)
 	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 4)
 }
 

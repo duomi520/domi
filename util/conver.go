@@ -51,10 +51,8 @@ func BytesToString(b []byte) string {
 
 //BytesToUint32 切片转uint32  little_endian
 func BytesToUint32(b []byte) uint32 {
-	if len(b) == 4 {
-		return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
-	}
-	return 0
+	_ = b[3]
+	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
 }
 
 //CopyUint32 将uint32加入切片
@@ -69,10 +67,8 @@ func CopyUint32(dst []byte, n uint32) {
 
 //BytesToUint16 切片转uint16  little_endian
 func BytesToUint16(b []byte) uint16 {
-	if len(b) == 2 {
-		return uint16(b[0]) | uint16(b[1])<<8
-	}
-	return 0
+	_ = b[1]
+	return uint16(b[0]) | uint16(b[1])<<8
 }
 
 //CopyUint16 将uint16加入切片
@@ -85,10 +81,8 @@ func CopyUint16(dst []byte, n uint16) {
 
 //BytesToInt64 切片转int64
 func BytesToInt64(b []byte) int64 {
-	if len(b) == 8 {
-		return int64(b[0]) | int64(b[1])<<8 | int64(b[2])<<16 | int64(b[3])<<24 | int64(b[4])<<32 | int64(b[5])<<40 | int64(b[6])<<48 | int64(b[7])<<56
-	}
-	return 0
+	_ = b[7]
+	return int64(b[0]) | int64(b[1])<<8 | int64(b[2])<<16 | int64(b[3])<<24 | int64(b[4])<<32 | int64(b[5])<<40 | int64(b[6])<<48 | int64(b[7])<<56
 }
 
 //CopyInt64 将int64加入切片
