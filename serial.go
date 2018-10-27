@@ -1,12 +1,12 @@
-package domi
+﻿package domi
 
 import (
 	"errors"
+	"sync"
+	"time"
+
 	"github.com/duomi520/domi/transport"
 	"github.com/duomi520/domi/util"
-	"sync"
-	"sync/atomic"
-	"time"
 )
 
 //Serial 串行处理
@@ -23,7 +23,6 @@ type Serial struct {
 
 	unsubscribeChan chan []uint16
 
-	state     uint32        //状态
 	stopChan  chan struct{} //退出信号
 	closeOnce sync.Once
 }
@@ -36,10 +35,10 @@ func NewSerial(n *Node) *Serial {
 		channelMap:       make(map[uint16]uint16, 256),
 		bags:             make([]*bag, 0, 64),
 		unsubscribeChan:  make(chan []uint16, 64),
-		state:            util.StateDie,
 		stopChan:         make(chan struct{}),
 	}
 	s.InitRingBuffer(1048576) //默认2^20
+	s.SetState(util.StatePause)
 	s.Node = n
 	return s
 }
@@ -58,7 +57,7 @@ func (s *Serial) WaitInit() {
 //Run 定时工作
 func (s *Serial) Run() {
 	snippet := time.NewTicker(s.SnippetDuration)
-	atomic.StoreUint32(&s.state, util.StateWork)
+	s.SetState(util.StateWork)
 	for {
 		select {
 		case <-snippet.C:
@@ -78,7 +77,7 @@ func (s *Serial) Run() {
 			s.Close()
 		case <-s.stopChan:
 			//停止输入
-			atomic.StoreUint32(&s.state, util.StateDie)
+			s.SetState(util.StateWork)
 			snippet.Stop()
 			for k := range s.channelMap {
 				s.sidecar.HandleFunc(k, nil)
@@ -101,13 +100,14 @@ func (s *Serial) Run() {
 func (s *Serial) handle() {
 	c := &ContextMQ{}
 	c.Node = s.Node
-	for s.HasData() {
-		data, available := s.ReadFromRingBuffer()
+	data, available := s.ReadFromRingBuffer()
+	for available != -1 {
 		fs := transport.DecodeByBytes(data)
 		c.Request = fs.GetData()
 		c.ex = fs.GetExtend()
 		s.contextMQHandler[fs.GetFrameType()].(func(*ContextMQ))(c)
 		s.SetAvailableCursor(available)
+		data, available = s.ReadFromRingBuffer()
 	}
 	cs := &ContextMQs{}
 	cs.Node = s.Node
@@ -136,7 +136,7 @@ func (s *Serial) serialProcessWrapper(se transport.Session) error {
 
 //Subscribe 订阅频道，需在serial.run()运行前执行（线程不安全）。
 func (s *Serial) Subscribe(channel uint16, f func(*ContextMQ)) error {
-	if atomic.LoadUint32(&s.state) == util.StateWork {
+	if s.HasWork() {
 		return errors.New("Subscribe|Serial已运行,需在serial.run()运行前执行。")
 	}
 	n := s.Node
@@ -149,7 +149,7 @@ func (s *Serial) Subscribe(channel uint16, f func(*ContextMQ)) error {
 
 //SubscribeRace 订阅频道,某一频道收到信息后，执行f，需在serial.run()运行前执行（线程不安全）。
 func (s *Serial) SubscribeRace(channels []uint16, f func(*ContextMQ)) error {
-	if atomic.LoadUint32(&s.state) == util.StateWork {
+	if s.HasWork() {
 		return errors.New("SubscribeRace|Serial已运行,需在serial.run()运行前执行。")
 	}
 	n := s.Node
@@ -201,7 +201,7 @@ func (bi bagAndIndex) serialProcessWrapper(c *ContextMQ) {
 
 //SubscribeAll 订阅频道,全部频道都收到信息后，执行f，需在serial.run()运行前执行（线程不安全）。
 func (s *Serial) SubscribeAll(channels []uint16, fs func(*ContextMQs)) error {
-	if atomic.LoadUint32(&s.state) == util.StateWork {
+	if s.HasWork() {
 		return errors.New("SubscribeAll|Serial已运行,需在serial.run()运行前执行。")
 	}
 	n := s.Node
@@ -230,7 +230,7 @@ func (s *Serial) UnsubscribeGroup(channels []uint16) error {
 		s.sidecar.HandleFunc(a, nil)
 		s.sidecar.SetChannel(uint16(s.sidecar.MachineID), a, 4)
 	}
-	if atomic.LoadUint32(&s.state) != util.StateWork {
+	if !s.HasWork() {
 		return errors.New("UnsubscribeGroup|Serial未运行。")
 	}
 	select {

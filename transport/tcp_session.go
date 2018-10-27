@@ -39,12 +39,14 @@ func BytesPoolPut(b []byte) {
 //定义错误
 var (
 	ErrFailureIORead = errors.New("transport.SessionTCP.ioRead|rBuf缓存溢出。")
+	ErrConnClose     = errors.New("ErrConnClose|SessionTCP已关闭。")
 )
 
 //SessionTCP 会话
 type SessionTCP struct {
 	Conn       *net.TCPConn
 	dispatcher *util.Dispatcher
+	state      uint32
 	rBuf       []byte
 	w          int //rBuf 读位置序号
 	r          int //rBuf 写位置序号
@@ -56,10 +58,11 @@ type SessionTCP struct {
 //NewSessionTCP 新建
 func NewSessionTCP(conn *net.TCPConn) *SessionTCP {
 	s := &SessionTCP{
-		Conn: conn,
-		rBuf: BytesPoolGet(),
-		r:    0,
-		w:    0,
+		Conn:  conn,
+		state: util.StateWork,
+		rBuf:  BytesPoolGet(),
+		r:     0,
+		w:     0,
 	}
 	ws := slot{
 		session:         s,
@@ -75,6 +78,7 @@ func NewSessionTCP(conn *net.TCPConn) *SessionTCP {
 //Close 关闭
 func (s *SessionTCP) Close() {
 	s.closeOnce.Do(func() {
+		s.setState(util.StateDie)
 		s.Wait()
 		s.Conn.Close()
 		time.AfterFunc(time.Second, func() {
@@ -133,6 +137,9 @@ func (s *SessionTCP) ioRead() error {
 
 //WriteFrameDataPromptly 立即发送数据 without delay
 func (s *SessionTCP) WriteFrameDataPromptly(f FrameSlice) error {
+	if !s.hasWork() {
+		return ErrConnClose
+	}
 	var err error
 	if f.GetFrameLength() >= FrameHeadLength {
 		if err = s.Conn.SetWriteDeadline(time.Now().Add(DefaultDeadlineDuration)); err != nil {
@@ -145,6 +152,9 @@ func (s *SessionTCP) WriteFrameDataPromptly(f FrameSlice) error {
 
 //WriteFrameDataToCache 写入发送缓存
 func (s *SessionTCP) WriteFrameDataToCache(f FrameSlice) error {
+	if !s.hasWork() {
+		return ErrConnClose
+	}
 	if f.GetFrameLength() >= BytesPoolLenght {
 		return s.WriteFrameDataPromptly(f)
 	}
@@ -184,6 +194,16 @@ loop:
 		s.dispatcher.JobQueue <- myslot
 	}
 	return nil
+}
+
+//hasWork 是否工作
+func (s *SessionTCP) hasWork() bool {
+	return atomic.LoadUint32(&s.state) == util.StateWork
+}
+
+//setState 设置状态
+func (s *SessionTCP) setState(u uint32) {
+	atomic.StoreUint32(&s.state, u)
 }
 
 //readUint32 读uint32

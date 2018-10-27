@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"fmt"
@@ -28,6 +28,7 @@ func main() {
 func ping(s transport.Session) error {
 	if err := s.WriteFrameDataToCache(transport.FramePong); err != nil {
 		fmt.Println("ping:", err.Error())
+os.Exit(1)
 	}
 	return nil
 	//	if err := s.WriteFrameDataPromptly(transport.FramePong); err != nil {

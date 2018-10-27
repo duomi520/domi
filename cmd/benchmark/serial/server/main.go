@@ -1,6 +1,9 @@
-package main
+﻿package main
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/duomi520/domi"
 )
 
@@ -15,10 +18,14 @@ func main() {
 	n := domi.NewNode(app.Ctx, app.Stop, "server v1.0.0", ":7080", ":9500", []string{"localhost:2379"})
 	app.RunAssembly(n)
 	s := domi.NewSerial(n)
+	s.InitRingBuffer(16777216)
 	s.Subscribe(ChannelMsg, ping)
 	app.RunAssembly(s)
 	app.Guard()
 }
 func ping(ctx *domi.ContextMQ) {
-	ctx.Reply([]byte("pong"))
+	if err := ctx.Reply([]byte("pong")); err != nil {
+		fmt.Println(err.Error())
+		os.Exit(2)
+	}
 }

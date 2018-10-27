@@ -115,16 +115,12 @@ func tcpReceive(s *ServerTCP, conn *net.TCPConn) {
 		return
 	}
 	err = s.ioLoop(session)
-	if err == io.EOF {
-		err = nil
-	}
-	if err != nil {
+	if err != nil && err != io.EOF {
 		if !strings.Contains(err.Error(), "wsarecv: An existing connection was forcibly closed by the remote host.") {
 			s.Logger.Error("tcpReceive|错误断开：", session.Conn.RemoteAddr(), " err:", err)
 			return
 		}
 	}
-	s.Logger.Debug("tcpReceive|会话断开：", session.Conn.RemoteAddr(), " err:", err)
 }
 
 //ioLoop 接收

@@ -1,4 +1,4 @@
-package domi
+﻿package domi
 
 import (
 	"fmt"
@@ -9,7 +9,9 @@ import (
 func Test_Serial1(t *testing.T) {
 	ctxExitFunc, n1, n2 := test2Node()
 	s := NewSerial(n2)
-	s.Subscribe(1091, testReply)
+		if err := s.Subscribe(1091, testReply); err != nil {
+		t.Fatal(err)
+	}
 	s.Subscribe(1092, testReply)
 	s.Subscribe(1093, testRequest)
 	s.Subscribe(1094, testRequest)

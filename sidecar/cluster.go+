@@ -13,12 +13,16 @@ import (
 
 //Specify 请求
 func (c *cluster) Specify(id, channel uint16, fs transport.FrameSlice) error {
+	var err error
 	s := atomic.LoadUint32(&c.sessionsState[id])
 	m := (*member)(atomic.LoadPointer(&c.sessions[id]))
 	if m != nil && s == util.StateWork {
-		return m.WriteFrameDataToCache(fs)
+		err = m.WriteFrameDataToCache(fs)
+		if err == nil {
+			return err
+		}
 	}
-	return nil
+	return err
 }
 
 //AskOne 请求某一个
@@ -40,6 +44,7 @@ func (c *cluster) AskOne(channel uint16, fs transport.FrameSlice) error {
 		}
 	}
 	return fmt.Errorf("AskOne|bucket 未发现频道 %d", channel)
+
 }
 
 //AskAll 请求所有

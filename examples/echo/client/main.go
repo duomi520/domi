@@ -1,7 +1,8 @@
-package main
+﻿package main
 
 import (
-	"fmt"
+	"log"
+	"os"
 
 	"github.com/duomi520/domi"
 )
@@ -18,10 +19,11 @@ func main() {
 	app.RunAssembly(r)
 	r.Subscribe(ChannelRpl, pong)
 	if err := r.Call(ChannelMsg, []byte("ping"), ChannelRpl); err != nil {
-		fmt.Println(err)
+		log.Fatalln(err.Error())
 	}
 	app.Guard()
 }
 func pong(ctx *domi.ContextMQ) {
-	fmt.Println(string(ctx.Request))
+	log.Println(string(ctx.Request))
+	os.Exit(0)
 }

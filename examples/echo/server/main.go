@@ -1,7 +1,7 @@
-package main
+﻿package main
 
 import (
-	"fmt"
+	"log"
 
 	"github.com/duomi520/domi"
 )
@@ -21,6 +21,6 @@ func main() {
 	app.Guard()
 }
 func ping(ctx *domi.ContextMQ) {
-	fmt.Println(string(ctx.Request))
+	log.Println(string(ctx.Request))
 	ctx.Reply([]byte("pong"))
 }

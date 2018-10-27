@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"context"
@@ -73,7 +73,10 @@ func clientN(num int) {
 	start := time.Now()
 	for i := 0; i < loop; i++ {
 		index := i % num
-		cs[index].Csession.WriteFrameDataToCache(transport.FramePing)
+		if err = cs[index].Csession.WriteFrameDataToCache(transport.FramePing); err != nil {
+			fmt.Println(err.Error())
+			os.Exit(1)
+		}
 		//cs[index].Csession.WriteFrameDataPromptly(transport.FramePing)
 	}
 	clientNwg.Wait()
