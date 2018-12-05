@@ -3,7 +3,7 @@ package domi
 import (
 	"context"
 	"errors"
-	"time"
+	"runtime/debug"
 	"unsafe"
 
 	"github.com/duomi520/domi/sidecar"
@@ -13,17 +13,12 @@ import (
 
 //Node 节点
 type Node struct {
-	sidecar *sidecar.Sidecar
-	Logger  *util.Logger
-}
-
-//NewNode 新建，cancel为服务的关闭函数。
-func NewNode(ctx context.Context, cancel func(), name, HTTPPort, TCPPort string, endpoints []string) *Node {
-	n := &Node{}
-	n.sidecar = sidecar.NewSidecar(ctx, cancel, name, HTTPPort, TCPPort, endpoints)
-	n.Logger = n.sidecar.Logger
-	n.Logger.SetLevel(util.ErrorLevel)
-	return n
+	sidecar                 *sidecar.Sidecar
+	Ctx                     context.Context
+	ExitFunc                func()
+	Name, HTTPPort, TCPPort string
+	Endpoints               []string
+	Logger                  *util.Logger
 }
 
 //Run 运行
@@ -31,10 +26,16 @@ func (n *Node) Run() {
 	n.sidecar.Run()
 }
 
+//Init 初始化
+func (n *Node) Init() {
+	n.sidecar = sidecar.NewSidecar(n.Ctx, n.ExitFunc, n.Name, n.HTTPPort, n.TCPPort, n.Endpoints)
+	n.Logger = n.sidecar.Logger
+	n.Logger.SetLevel(util.ErrorLevel)
+}
+
 //WaitInit 阻塞，等待Run初始化完成
 func (n *Node) WaitInit() {
 	n.sidecar.WaitInit()
-	time.Sleep(10 * time.Millisecond)
 }
 
 //Pause 使服务暂停
@@ -89,6 +90,12 @@ func (n *Node) Subscribe(channel uint16, f func(*ContextMQ)) {
 
 //
 func (pw processWrapper) processWrapper(s transport.Session) error {
+	defer func() {
+		if r := recover(); r != nil {
+			pw.n.Logger.Error("processWrapper|异常频道：", s.GetFrameSlice().GetFrameType())
+			pw.n.Logger.Error("processWrapper|异常拦截：", r, string(debug.Stack()))
+		}
+	}()
 	c := &ContextMQ{
 		Request: s.GetFrameSlice().GetData(),
 		ex:      s.GetFrameSlice().GetExtend(),

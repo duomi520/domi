@@ -33,7 +33,14 @@ func main() {
 	var ctx context.Context
 	ctx, gate.Cancel = context.WithCancel(context.Background())
 	app.RunAssembly(gate)
-	node = domi.NewNode(ctx, app.Stop, "gate V1.0.1", ":7081", ":9521", []string{"localhost:2379"})
+	node = &domi.Node{
+		Ctx:       ctx,
+		ExitFunc:  app.Stop,
+		Name:      "gate V1.0.1",
+		HTTPPort:  ":7081",
+		TCPPort:   ":9501",
+		Endpoints: []string{"localhost:2379"},
+	}
 	app.RunAssembly(node)
 	node.Subscribe(ChannelRoom, gate.rev)
 	defer node.Unsubscribe(ChannelRoom)
@@ -116,6 +123,9 @@ type gateway struct {
 	connMap *sync.Map
 	sync.WaitGroup
 }
+
+//Init 初始化
+func (g *gateway) Init() {}
 
 //WaitInit 准备
 func (g *gateway) WaitInit() {}

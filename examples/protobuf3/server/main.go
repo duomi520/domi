@@ -17,7 +17,14 @@ const (
 //无状态的服务
 func main() {
 	app := domi.NewMaster()
-	r := domi.NewNode(app.Ctx, app.Stop, "server v1.0.0", ":7080", ":9500", []string{"localhost:2379"})
+	r := &domi.Node{
+		Ctx:       app.Ctx,
+		ExitFunc:  app.Stop,
+		Name:      "server V1.0.0",
+		HTTPPort:  ":7080",
+		TCPPort:   ":9500",
+		Endpoints: []string{"localhost:2379"},
+	}
 	app.RunAssembly(r)
 	r.Subscribe(ChannelMsg, reply)
 	app.Guard()

@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 
@@ -29,7 +29,14 @@ func main() {
 	var ctx context.Context
 	ctx, r.Cancel = context.WithCancel(context.Background())
 	app.RunAssembly(r)
-	n := domi.NewNode(ctx, app.Stop, "room V1.0.1", ":7082", ":9522", []string{"localhost:2379"})
+	n := &domi.Node{
+		Ctx:       ctx,
+		ExitFunc:  app.Stop,
+		Name:      "room V1.0.1",
+		HTTPPort:  ":7082",
+		TCPPort:   ":9522",
+		Endpoints: []string{"localhost:2379"},
+	}
 	app.RunAssembly(n)
 	//注册频道
 	n.Subscribe(ChannelMsg, r.rec)
@@ -56,6 +63,9 @@ func (r *room) Run() {
 	r.Cancel()
 }
 
+//Init 初始化
+func (r *room) Init() {}
+
 //WaitInit 准备好
 func (r *room) WaitInit() {}
 func (r *room) stop() {
@@ -64,7 +74,7 @@ func (r *room) stop() {
 	})
 }
 func (r *room) rec(ctx *domi.ContextMQ) {
-	fmt.Println(string(ctx.Request))
+	log.Println(string(ctx.Request))
 	ctx.Publish(ChannelRoom, ctx.Request)
 }
 func (r *room) join(ctx *domi.ContextMQ) {

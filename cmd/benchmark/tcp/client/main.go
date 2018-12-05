@@ -28,13 +28,14 @@ func main() {
 }
 
 func dial() *transport.SessionTCP {
+	logger, _ := util.NewLogger(util.ErrorLevel, "")
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", "127.0.0.1:4567")
 	conn, err := net.DialTCP("tcp", nil, tcpAddr)
 	if err != nil {
 		fmt.Println("连接服务端失败:", err.Error())
 		os.Exit(1)
 	}
-	session := transport.NewSessionTCP(conn)
+	session := transport.NewSessionTCP(conn, logger)
 	b := make([]byte, 4)
 	util.CopyUint32(b, transport.ProtocolMagicNumber)
 	if _, err = conn.Write(b); err != nil {
@@ -47,10 +48,10 @@ func dial() *transport.SessionTCP {
 var clientNwg sync.WaitGroup
 
 func clientN(num int) {
-	sd := util.NewDispatcher("TCPClient", 256)
+	sd := util.NewDispatcher(256)
 	go sd.Run()
 	defer sd.Close()
-	loop := 500000000
+	loop := 500000000 //500000000
 	//	f, _ := os.Create("profile.mem")
 	//	defer f.Close()
 	var err error

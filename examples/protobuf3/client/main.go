@@ -17,7 +17,14 @@ const (
 
 func main() {
 	app := domi.NewMaster()
-	r := domi.NewNode(app.Ctx, app.Stop, "client V1.0.0", ":7081", ":9501", []string{"localhost:2379"})
+	r := &domi.Node{
+		Ctx:       app.Ctx,
+		ExitFunc:  app.Stop,
+		Name:      "client V1.0.0",
+		HTTPPort:  ":7081",
+		TCPPort:   ":9501",
+		Endpoints: []string{"localhost:2379"},
+	}
 	app.RunAssembly(r)
 	r.Subscribe(ChannelRpl, request)
 	if len(os.Args) > 1 {

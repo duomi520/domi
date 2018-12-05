@@ -2,6 +2,7 @@
 
 import (
 	"errors"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -13,10 +14,11 @@ import (
 //一个协程处理一个serial,以避免锁的问题，同时减少协程切换，提高cpu利用率。
 //按时间轮来分配cpu，不适用于cpu密集计算或长IO场景。
 type Serial struct {
-	SnippetDuration  time.Duration
+	SnippetDuration  time.Duration //时间间隔
 	contextMQHandler []interface{}
 	channelMap       map[uint16]uint16
 	util.RingBuffer
+	RingBufferSize uint64 //缓存大小
 
 	bags []*bag
 	*Node
@@ -27,22 +29,6 @@ type Serial struct {
 	closeOnce sync.Once
 }
 
-//NewSerial 新建
-func NewSerial(n *Node) *Serial {
-	s := &Serial{
-		SnippetDuration:  10 * time.Microsecond,
-		contextMQHandler: make([]interface{}, 65536),
-		channelMap:       make(map[uint16]uint16, 256),
-		bags:             make([]*bag, 0, 64),
-		unsubscribeChan:  make(chan []uint16, 64),
-		stopChan:         make(chan struct{}),
-	}
-	s.InitRingBuffer(1048576) //默认2^20
-	s.SetState(util.StatePause)
-	s.Node = n
-	return s
-}
-
 //Close 关闭
 func (s *Serial) Close() {
 	s.closeOnce.Do(func() {
@@ -50,9 +36,25 @@ func (s *Serial) Close() {
 	})
 }
 
-//WaitInit 准备好
-func (s *Serial) WaitInit() {
+//Init 初始化
+func (s *Serial) Init() {
+	if s.SnippetDuration == 0 {
+		s.SnippetDuration = 10 * time.Microsecond
+	}
+	if s.RingBufferSize == 0 {
+		s.RingBufferSize = 1048576 //默认2^20
+	}
+	s.InitRingBuffer(s.RingBufferSize)
+	s.contextMQHandler = make([]interface{}, 65536)
+	s.channelMap = make(map[uint16]uint16, 256)
+	s.bags = make([]*bag, 0, 64)
+	s.unsubscribeChan = make(chan []uint16, 64)
+	s.stopChan = make(chan struct{})
+	s.SetState(util.StatePause)
 }
+
+//WaitInit 准备好
+func (s *Serial) WaitInit() {}
 
 //Run 定时工作
 func (s *Serial) Run() {
@@ -61,7 +63,7 @@ func (s *Serial) Run() {
 	for {
 		select {
 		case <-snippet.C:
-			s.handle()
+			s.assignmentTask()
 		case u := <-s.unsubscribeChan:
 			l := len(s.bags)
 			if l > 0 {
@@ -83,9 +85,9 @@ func (s *Serial) Run() {
 				s.sidecar.HandleFunc(k, nil)
 			}
 			time.Sleep(5 * s.SnippetDuration)
-			s.handle()
-			//15分钟后强制释放，如果部分Handler时间超过15分钟，最后释放时会产生异常。
-			time.AfterFunc(15*time.Minute, func() {
+			s.assignmentTask()
+			//5分钟后强制释放，如果部分Handler时间超过5分钟，最后释放时会产生异常。
+			time.AfterFunc(5*time.Minute, func() {
 				s.contextMQHandler = nil
 				s.channelMap = nil
 				s.ReleaseRingBuffer()
@@ -97,11 +99,11 @@ func (s *Serial) Run() {
 	}
 }
 
-func (s *Serial) handle() {
+func (s *Serial) assignmentTask() {
 	c := &ContextMQ{}
 	c.Node = s.Node
 	data, available := s.ReadFromRingBuffer()
-	for available != -1 {
+	for available != 0 {
 		fs := transport.DecodeByBytes(data)
 		c.Request = fs.GetData()
 		c.ex = fs.GetExtend()
@@ -134,13 +136,25 @@ func (s *Serial) serialProcessWrapper(se transport.Session) error {
 	return s.WriteToRingBuffer(se.GetFrameSlice().GetAll())
 }
 
+//abnormal 异常拦截
+func (s *Serial) abnormal(f func(*ContextMQ)) func(*ContextMQ) {
+	return func(c *ContextMQ) {
+		defer func() {
+			if r := recover(); r != nil {
+				s.Logger.Error("abnormal|异常拦截：", r, string(debug.Stack()))
+			}
+		}()
+		f(c)
+	}
+}
+
 //Subscribe 订阅频道，需在serial.run()运行前执行（线程不安全）。
 func (s *Serial) Subscribe(channel uint16, f func(*ContextMQ)) error {
 	if s.HasWork() {
 		return errors.New("Subscribe|Serial已运行,需在serial.run()运行前执行。")
 	}
 	n := s.Node
-	s.contextMQHandler[channel] = f
+	s.contextMQHandler[channel] = s.abnormal(f)
 	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 3)
 	n.sidecar.HandleFunc(channel, s.serialProcessWrapper)
 	s.channelMap[channel] = channel
@@ -154,7 +168,7 @@ func (s *Serial) SubscribeRace(channels []uint16, f func(*ContextMQ)) error {
 	}
 	n := s.Node
 	for _, a := range channels {
-		s.contextMQHandler[a] = f
+		s.contextMQHandler[a] = s.abnormal(f)
 		n.sidecar.SetChannel(uint16(n.sidecar.MachineID), a, 3)
 		n.sidecar.HandleFunc(a, s.serialProcessWrapper)
 		s.channelMap[a] = a
@@ -216,7 +230,7 @@ func (s *Serial) SubscribeAll(channels []uint16, fs func(*ContextMQs)) error {
 	ba.bag = b
 	for i, a := range channels {
 		ba.index = i
-		s.contextMQHandler[a] = ba.serialProcessWrapper
+		s.contextMQHandler[a] = s.abnormal(ba.serialProcessWrapper)
 		n.sidecar.SetChannel(uint16(n.sidecar.MachineID), a, 3)
 		n.sidecar.HandleFunc(a, s.serialProcessWrapper)
 		s.channelMap[a] = a

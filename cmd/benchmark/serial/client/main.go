@@ -26,11 +26,20 @@ func main() {
 	app := domi.NewMaster()
 	app.Logger.SetLevel(util.ErrorLevel)
 	//单节点
-	node := domi.NewNode(app.Ctx, app.Stop, "client V1.0.0", ":7081", ":9501", []string{"localhost:2379"})
+	node := &domi.Node{
+		Ctx:       app.Ctx,
+		ExitFunc:  app.Stop,
+		Name:      "client v1.0.0",
+		HTTPPort:  ":7081",
+		TCPPort:   ":9501",
+		Endpoints: []string{"localhost:2379"},
+	}
 	app.RunAssembly(node)
-	s := domi.NewSerial(node)
-	s.Subscribe(ChannelRpl, pong)
+	s := &domi.Serial{
+		Node: node,
+	}
 	app.RunAssembly(s)
+	s.Subscribe(ChannelRpl, pong)
 	loop := 20000
 	gNum := 1000
 	clientNwg.Add(loop * gNum)
@@ -66,7 +75,14 @@ func main() {
 				tp = fmt.Sprintf(":6%d", i)
 			}
 		}
-		n[i] = domi.NewNode(app.Ctx, app.Stop, "client V1.0.0", hp, tp, []string{"localhost:2379"})
+		n[i] = &domi.Node{
+			Ctx:       app.Ctx,
+			ExitFunc:  app.Stop,
+			Name:      "client v1.0.0",
+			HTTPPort:  hp,
+			TCPPort:   tp,
+			Endpoints: []string{"localhost:2379"},
+		}
 		app.RunAssembly(n[i])
 		n[i].Subscribe(cr[i], pong)
 	}

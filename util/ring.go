@@ -2,6 +2,7 @@
 
 import (
 	"errors"
+	"runtime"
 	"sync/atomic"
 )
 
@@ -24,23 +25,23 @@ var ErrWriteToRingBufferData = errors.New("util.ErrWriteToRingBufferData|写入�
 //RingBuffer 环形数组
 //多生产者，单消费者模式。
 type RingBuffer struct {
-	ringBufferShift int64 //求余 设X对Y求余，Y等于2^N，公式为：X & (2^N - 1)
-	ringBufferSize  int64 //2^26 67108864 64M
+	ringBufferShift uint64 //求余 设X对Y求余，Y等于2^N，公式为：X & (2^N - 1)
+	ringBufferSize  uint64 //2^26 67108864 64M
 	state           uint32
 	ring            []byte
 	submitRing      []byte    //写入后提交位置。
 	_padding1       [8]uint64 //凑够64字节CPU缓存行
-	askCursor       int64     //申请写入位置
+	askCursor       uint64    //申请写入位置
 	_padding2       [8]uint64
-	availableCursor int64 //已消费位置
+	availableCursor uint64 //已消费位置
 }
 
 //InitRingBuffer  初始化环形数组
-func (r *RingBuffer) InitRingBuffer(n int) {
-	r.ringBufferShift = int64(n - 1)
-	r.ringBufferSize = int64(n)
-	r.ring = make([]byte, n)
-	r.submitRing = make([]byte, n)
+func (r *RingBuffer) InitRingBuffer(n uint64) {
+	r.ringBufferSize = minQuantity(n)
+	r.ringBufferShift = r.ringBufferSize - 1
+	r.ring = make([]byte, r.ringBufferSize)
+	r.submitRing = make([]byte, r.ringBufferSize)
 }
 
 //ReleaseRingBuffer 释放
@@ -58,12 +59,20 @@ func (r *RingBuffer) WriteToRingBuffer(data []byte) error {
 	if len(data) < 4 {
 		return ErrWriteToRingBufferData
 	}
-	l := int64(len(data))
+	l := uint64(len(data))
+	var end uint64
 	//申请空间
-	if (atomic.LoadInt64(&r.askCursor) + l - atomic.LoadInt64(&r.availableCursor)) >= r.ringBufferSize {
-		return ErrRingBufferOverflow
+	for {
+		ask := atomic.LoadUint64(&r.askCursor)
+		end = ask + l
+		if (end - atomic.LoadUint64(&r.availableCursor)) >= r.ringBufferSize {
+			return ErrRingBufferOverflow
+		}
+		if atomic.CompareAndSwapUint64(&r.askCursor, ask, end) {
+			break
+		}
+		runtime.Gosched()
 	}
-	end := atomic.AddInt64(&r.askCursor, l)
 	//写入Ring
 	cut := end & r.ringBufferShift
 	if cut >= l {
@@ -78,21 +87,21 @@ func (r *RingBuffer) WriteToRingBuffer(data []byte) error {
 }
 
 //ReadFromRingBuffer 单消费者模式 读出环形数组 前4个字节必须为长度。
-func (r *RingBuffer) ReadFromRingBuffer() ([]byte, int64) {
-	if atomic.LoadInt64(&r.askCursor) > atomic.LoadInt64(&r.availableCursor) {
-		available := atomic.LoadInt64(&r.availableCursor)
-		end := available + int64(BytesToUint32(r.getBytes(available, available+4)))
+func (r *RingBuffer) ReadFromRingBuffer() ([]byte, uint64) {
+	available := atomic.LoadUint64(&r.availableCursor)
+	if atomic.LoadUint64(&r.askCursor) > available {
+		end := available + uint64(BytesToUint32(r.getBytes(available, available+4)))
 		if r.submitRing[end&r.ringBufferShift] == 1 {
-			r.submitRing[end&r.ringBufferShift] = 0
 			return r.getBytes(available, end), end
 		}
 	}
-	return nil, -1
+	return nil, 0
 }
 
 //SetAvailableCursor 单消费者模式，提交已消费位置
-func (r *RingBuffer) SetAvailableCursor(val int64) {
-	atomic.StoreInt64(&r.availableCursor, val)
+func (r *RingBuffer) SetAvailableCursor(val uint64) {
+	r.submitRing[val&r.ringBufferShift] = 0
+	atomic.StoreUint64(&r.availableCursor, val)
 }
 
 //HasWork 是否工作
@@ -106,7 +115,7 @@ func (r *RingBuffer) SetState(s uint32) {
 }
 
 //getBytes 从ring读取切片
-func (r *RingBuffer) getBytes(start, end int64) []byte {
+func (r *RingBuffer) getBytes(start, end uint64) []byte {
 	s := start & r.ringBufferShift
 	e := end & r.ringBufferShift
 	if e >= s {
@@ -117,4 +126,17 @@ func (r *RingBuffer) getBytes(start, end int64) []byte {
 	copy(buf[:l-e], r.ring[s:])
 	copy(buf[l-e:], r.ring[:e])
 	return buf
+}
+
+//minQuantity 到最近的2的倍数
+func minQuantity(v uint64) uint64 {
+	v--
+	v |= v >> 1
+	v |= v >> 2
+	v |= v >> 4
+	v |= v >> 8
+	v |= v >> 16
+	v |= v >> 32
+	v++
+	return v
 }

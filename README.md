@@ -63,7 +63,14 @@ func main() {
     //新建管理协程
     app := domi.NewMaster()
     //app.Stop服务退出函数，"client v1.0.0" 服务名，":7081" http端口号，":9501" tcp端口号，最后一个为 etcd 服务地址
-    r := domi.NewNode(app.Ctx, app.Stop, "client V1.0.0", ":7081", ":9501", []string{"localhost:2379"})
+    r := &Node{
+        Ctx:       app.Ctx,
+        ExitFunc:  app.Stop,
+        Name:      "client V1.0.0",
+        HTTPPort:  ":7081",
+        TCPPort:   ":9501",
+        Endpoints: []string{"localhost:2379"},
+    }
     //运行r节点
     app.RunAssembly(r)
     //订阅频道ChannelRpl，关联到处理函数pong
@@ -100,7 +107,14 @@ func main() {
     //新建管理协程
     app := domi.NewMaster()
     //app.Stop服务退出函数，"server v1.0.0" 服务名，":7080" http端口号，":9500" tcp端口号，最后一个为 etcd 服务地址
-    r := domi.NewNode(app.Ctx, app.Stop, "server v1.0.0", ":7080", ":9500", []string{"localhost:2379"})
+    r := &Node{
+        Ctx:       app.Ctx,
+        ExitFunc:  app.Stop,
+        Name:      "server v1.0.0",
+        HTTPPort:  ":7080",
+        TCPPort:   ":9500",
+        Endpoints: []string{"localhost:2379"},
+    }
     //运行r节点
     app.RunAssembly(r)
     //订阅频道ChannelMsg，关联到处理函数ping
@@ -268,10 +282,19 @@ func do(c *domi.ContextMQ) {
 func do() {
     ...
     app := domi.NewMaster()
-    n := domi.NewNode(app.Ctx, app.Stop, "client V1.0.0", ":7081", ":9501", []string{"localhost:2379"})
+    n := &Node{
+        Ctx:       app.Ctx,
+        ExitFunc:  app.Stop,
+        Name:      "client V1.0.0",
+        HTTPPort:  ":7081",
+        TCPPort:   ":9501",
+        Endpoints: []string{"localhost:2379"},
+    }
     app.RunAssembly(n)
     //继承自Node
-    s := domi.NewSerial(n)
+    s := &Serial{
+        Node: n,
+    }
     app.RunAssembly(s)
     app.Guard()
     ...

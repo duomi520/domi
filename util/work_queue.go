@@ -1,6 +1,7 @@
 package util
 
 import (
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -29,6 +30,12 @@ func NewWorker(d *Dispatcher) *Worker {
 
 //run 运行
 func (w *Worker) run() {
+	defer func() {
+		if r := recover(); r != nil {
+			w.dispatcher.logger.Error("Worker|异常拦截：", r, string(debug.Stack()))
+		}
+		w.dispatcher.workerPoolCount--
+	}()
 	for {
 		j := <-w.jobChan
 		if j == nil {
@@ -42,13 +49,12 @@ func (w *Worker) run() {
 
 //Dispatcher 调度者,控制io发送
 type Dispatcher struct {
-	Name string
+	JobQueue chan Job //任务队列
+	jobSlice []Job    //任务切片
 
-	JobQueue    chan Job      //任务队列
-	workerQueue chan chan Job //空闲工作者队列
-	jobSlice    []Job         //任务切片
-
-	workerPoolCount int //池的协程数
+	workerQueue     chan chan Job //空闲工作者队列
+	workerPool      []chan Job    //空闲工作者池
+	workerPoolCount int           //池的协程数
 
 	stopChan chan struct{} //退出信号
 
@@ -58,16 +64,14 @@ type Dispatcher struct {
 }
 
 //NewDispatcher 新建
-func NewDispatcher(name string, count int) *Dispatcher {
+func NewDispatcher(count int) *Dispatcher {
 	logger, _ := NewLogger(ErrorLevel, "")
-	logger.SetMark("Dispatcher." + name)
+	logger.SetMark("Dispatcher")
 	d := &Dispatcher{
-		Name: name,
-
-		JobQueue:    make(chan Job, MaxQueue),
-		workerQueue: make(chan chan Job, count),
-		jobSlice:    make([]Job, 0, MaxQueue),
-
+		JobQueue:        make(chan Job, MaxQueue),
+		jobSlice:        make([]Job, 0, MaxQueue),
+		workerQueue:     make(chan chan Job, count),
+		workerPool:      make([]chan Job, count),
 		workerPoolCount: count,
 		stopChan:        make(chan struct{}),
 		logger:          logger,
@@ -80,49 +84,41 @@ func (d *Dispatcher) Run() {
 	d.logger.Debug("Run|调度守护启动……")
 	snippet := time.NewTicker(10 * time.Microsecond)
 	//初始化空闲工作者池
-	workerPool := make([]chan Job, d.workerPoolCount)
 	for i := 0; i < d.workerPoolCount; i++ {
 		worker := NewWorker(d)
-		workerPool[i] = worker.jobChan
+		d.workerPool[i] = worker.jobChan
 		d.Wrap(worker.run)
 	}
 	for {
 		//多路复用，运行任务的顺序是打乱的。
 		select {
-		case jobChannel := <-d.workerQueue:
-			workerPool = append(workerPool, jobChannel)
-		case <-snippet.C:
-			js := len(d.jobSlice)
-			if js > 0 {
-				wp := len(workerPool)
-				if js >= wp {
-					for i := 0; i < wp; i++ {
-						workerPool[i] <- d.jobSlice[i]
-					}
-					d.jobSlice = d.jobSlice[wp:]
-					workerPool = workerPool[:0]
-				} else {
-					for i := 0; i < js; i++ {
-						workerPool[wp-1-i] <- d.jobSlice[i]
-					}
-					d.jobSlice = d.jobSlice[:0]
-					workerPool = workerPool[:wp-js]
-				}
-			}
+		case jj := <-d.workerQueue:
+			d.workerPool = append(d.workerPool, jj)
 		case j := <-d.JobQueue:
 			d.jobSlice = append(d.jobSlice, j)
+		case <-snippet.C:
+			d.assignmentTask()
 		case <-d.stopChan:
 			d.logger.Debug("Run|等待工作者关闭……")
 			snippet.Stop()
-			for ix := range workerPool {
-				workerPool[ix] <- nil
+			for len(d.jobSlice) > 0 {
+				d.assignmentTask()
+				time.Sleep(10 * time.Microsecond)
 			}
-			go func() {
-				j := <-d.workerQueue
-				j <- nil
-			}()
+			for wp := range d.workerPool {
+				d.workerPool[wp] <- nil
+				d.workerPoolCount--
+			}
+			for d.workerPoolCount > 0 {
+				wq := <-d.workerQueue
+				wq <- nil
+				d.workerPoolCount--
+			}
 			d.Wait()
 			d.logger.Debug("Run|调度守护关闭。")
+			d.jobSlice = nil
+			d.workerPool = nil
+			close(d.workerQueue)
 			return
 		}
 	}
@@ -133,4 +129,24 @@ func (d *Dispatcher) Close() {
 	d.closeOnce.Do(func() {
 		close(d.stopChan)
 	})
+}
+
+func (d *Dispatcher) assignmentTask() {
+	js := len(d.jobSlice)
+	if js > 0 {
+		wp := len(d.workerPool)
+		if js >= wp {
+			for i := 0; i < wp; i++ {
+				d.workerPool[i] <- d.jobSlice[i]
+			}
+			d.jobSlice = d.jobSlice[wp:]
+			d.workerPool = d.workerPool[:0]
+		} else {
+			for i := 0; i < js; i++ {
+				d.workerPool[wp-1-i] <- d.jobSlice[i]
+			}
+			d.jobSlice = d.jobSlice[:0]
+			d.workerPool = d.workerPool[:wp-js]
+		}
+	}
 }

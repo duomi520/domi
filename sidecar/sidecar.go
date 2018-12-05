@@ -48,7 +48,7 @@ func NewSidecar(ctx context.Context, cancel func(), name, HTTPPort, TCPPort stri
 	if err != nil {
 		s.Logger.Fatal(err)
 	}
-	s.Dispatcher = util.NewDispatcher("TCP", 256)
+	s.Dispatcher = util.NewDispatcher(256)
 	//tcp支持
 	s.tcpServer = transport.NewServerTCP(ctx, TCPPort, s.Handler, s.Dispatcher)
 	if s.tcpServer == nil {
@@ -70,6 +70,11 @@ func NewSidecar(ctx context.Context, cancel func(), name, HTTPPort, TCPPort stri
 	http.HandleFunc(pre+"/exit", s.exit)
 	s.Logger.SetMark(fmt.Sprintf("Sidecar.%d", s.MachineID))
 	return s
+}
+
+//Init 初始化
+func (s *Sidecar) Init() {
+
 }
 
 //WaitInit 准备好

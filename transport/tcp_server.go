@@ -49,6 +49,9 @@ func NewServerTCP(ctx context.Context, post string, h *Handler, sd *util.Dispatc
 	return s
 }
 
+//Init 初始化
+func (s *ServerTCP) Init() {}
+
 //WaitInit 准备好
 func (s *ServerTCP) WaitInit() {}
 
@@ -97,7 +100,7 @@ func tcpReceive(s *ServerTCP, conn *net.TCPConn) {
 			s.Logger.Error("tcpReceive|defer错误：", r, string(debug.Stack()))
 		}
 	}()
-	session := NewSessionTCP(conn)
+	session := NewSessionTCP(conn, s.Logger)
 	session.dispatcher = s.dispatcher
 	s.Add(1)
 	defer func() {

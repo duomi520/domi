@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"log"
 	"time"
 
 	"github.com/duomi520/domi"
@@ -30,7 +30,14 @@ func main() {
 	var ctx context.Context
 	ctx, r.Cancel = context.WithCancel(context.Background())
 	app.RunAssembly(r)
-	n := domi.NewNode(ctx, app.Stop, "room V1.0.1", ":7082", ":9522", []string{"localhost:2379"})
+	n := &domi.Node{
+		Ctx:       ctx,
+		ExitFunc:  app.Stop,
+		Name:      "room V1.0.1",
+		HTTPPort:  ":7082",
+		TCPPort:   ":9522",
+		Endpoints: []string{"localhost:2379"},
+	}
 	app.RunAssembly(n)
 	r.N = n
 	//注册频道
@@ -55,7 +62,7 @@ func (r *room) Run() {
 	for {
 		select {
 		case data := <-r.recChan:
-			fmt.Println(string(data))
+			log.Println(string(data))
 			r.N.Publish(ChannelRoom, data)
 		case <-r.joinChan:
 			r.count++
@@ -73,6 +80,9 @@ func (r *room) Run() {
 		}
 	}
 }
+
+//Init 初始化
+func (r *room) Init() {}
 
 //WaitInit 准备好
 func (r *room) WaitInit() {}

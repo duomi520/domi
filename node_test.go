@@ -12,26 +12,68 @@ var testEndpoints = []string{"localhost:2379"}
 
 func test2Node() (context.CancelFunc, *Node, *Node) {
 	ctx, ctxExitFunc := context.WithCancel(context.Background())
-	n1 := NewNode(ctx, nil, "1/server/", ":7081", ":9521", testEndpoints)
+	n1 := &Node{
+		Ctx:       ctx,
+		Name:      "1/server/",
+		HTTPPort:  ":7081",
+		TCPPort:   ":9521",
+		Endpoints: testEndpoints,
+	}
+	n1.Init()
 	go n1.Run()
 	n1.WaitInit()
-	n2 := NewNode(ctx, nil, "2/server/", ":7082", ":9522", testEndpoints)
+	n2 := &Node{
+		Ctx:       ctx,
+		Name:      "2/server/",
+		HTTPPort:  ":7082",
+		TCPPort:   ":9522",
+		Endpoints: testEndpoints,
+	}
+	n2.Init()
 	go n2.Run()
 	n2.WaitInit()
 	return ctxExitFunc, n1, n2
 }
 func test4Node() (context.CancelFunc, *Node, *Node, *Node, *Node) {
 	ctx, ctxExitFunc := context.WithCancel(context.Background())
-	n1 := NewNode(ctx, nil, "1/server/", ":7081", ":9521", testEndpoints)
+	n1 := &Node{
+		Ctx:       ctx,
+		Name:      "1/server/",
+		HTTPPort:  ":7081",
+		TCPPort:   ":9521",
+		Endpoints: testEndpoints,
+	}
+	n1.Init()
 	go n1.Run()
 	n1.WaitInit()
-	n2 := NewNode(ctx, nil, "2/server/", ":7082", ":9522", testEndpoints)
+	n2 := &Node{
+		Ctx:       ctx,
+		Name:      "2/server/",
+		HTTPPort:  ":7082",
+		TCPPort:   ":9522",
+		Endpoints: testEndpoints,
+	}
+	n2.Init()
 	go n2.Run()
 	n2.WaitInit()
-	n3 := NewNode(ctx, nil, "3/server/", ":7083", ":9523", testEndpoints)
+	n3 := &Node{
+		Ctx:       ctx,
+		Name:      "3/server/",
+		HTTPPort:  ":7083",
+		TCPPort:   ":9523",
+		Endpoints: testEndpoints,
+	}
+	n3.Init()
 	go n3.Run()
 	n3.WaitInit()
-	n4 := NewNode(ctx, nil, "4/server/", ":7084", ":9524", testEndpoints)
+	n4 := &Node{
+		Ctx:       ctx,
+		Name:      "4/server/",
+		HTTPPort:  ":7084",
+		TCPPort:   ":9524",
+		Endpoints: testEndpoints,
+	}
+	n4.Init()
 	go n4.Run()
 	n4.WaitInit()
 	return ctxExitFunc, n1, n2, n3, n4

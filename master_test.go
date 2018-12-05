@@ -8,6 +8,7 @@ import (
 type testMaster struct {
 }
 
+func (p *testMaster) Init()     {}
 func (p *testMaster) Run()      {}
 func (p *testMaster) WaitInit() {}
 

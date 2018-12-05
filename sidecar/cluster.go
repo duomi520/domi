@@ -94,6 +94,10 @@ func newCluster(name, HTTPPort, TCPPort string, operation interface{}, logger *u
 	c.machineID = uint16(c.MachineID)
 	return c, nil
 }
+
+//Init 初始化
+func (c *cluster) Init() {
+}
 func (c *cluster) WaitInit() {
 	<-c.readyChan
 }

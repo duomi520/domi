@@ -48,7 +48,7 @@ func NewClientTCP(ctx context.Context, url string, h *Handler, sd *util.Dispatch
 		handler: h,
 		Logger:  logger,
 	}
-	c.Csession = NewSessionTCP(conn)
+	c.Csession = NewSessionTCP(conn, c.Logger)
 	c.Csession.dispatcher = sd
 	//设置IO超时
 	if err := conn.SetWriteDeadline(time.Now().Add(DefaultDeadlineDuration)); err != nil {
@@ -75,6 +75,9 @@ func (c *ClientTCP) Heartbeat() error {
 	}
 	return nil
 }
+
+//Init 初始化
+func (c *ClientTCP) Init() {}
 
 //WaitInit 准备好
 func (c *ClientTCP) WaitInit() {}

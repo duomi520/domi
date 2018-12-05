@@ -21,6 +21,7 @@ func (w *WaitGroupWrapper) Wrap(cb func()) {
 
 //Runnable 组件
 type Runnable interface {
+	Init()
 	Run()
 	WaitInit()
 }
@@ -35,6 +36,7 @@ type Child struct {
 func (c *Child) RunAssembly(a Runnable) {
 	atomic.AddInt32(&c.childCount, 1)
 	c.Add(1)
+	a.Init()
 	go func() {
 		a.Run()
 		c.Done()

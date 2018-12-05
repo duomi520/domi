@@ -15,12 +15,21 @@ const (
 
 func main() {
 	app := domi.NewMaster()
-	n := domi.NewNode(app.Ctx, app.Stop, "server v1.0.0", ":7080", ":9500", []string{"localhost:2379"})
+	n := &domi.Node{
+		Ctx:       app.Ctx,
+		ExitFunc:  app.Stop,
+		Name:      "server v1.0.0",
+		HTTPPort:  ":7080",
+		TCPPort:   ":9500",
+		Endpoints: []string{"localhost:2379"},
+	}
 	app.RunAssembly(n)
-	s := domi.NewSerial(n)
-	s.InitRingBuffer(16777216)
-	s.Subscribe(ChannelMsg, ping)
+	s := &domi.Serial{
+		Node:           n,
+		RingBufferSize: 67108864, //2^26
+	}
 	app.RunAssembly(s)
+	s.Subscribe(ChannelMsg, ping)
 	app.Guard()
 }
 func ping(ctx *domi.ContextMQ) {

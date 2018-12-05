@@ -8,8 +8,11 @@ import (
 
 func Test_Serial1(t *testing.T) {
 	ctxExitFunc, n1, n2 := test2Node()
-	s := NewSerial(n2)
-		if err := s.Subscribe(1091, testReply); err != nil {
+	s := &Serial{
+		Node: n2,
+	}
+	s.Init()
+	if err := s.Subscribe(1091, testReply); err != nil {
 		t.Fatal(err)
 	}
 	s.Subscribe(1092, testReply)
@@ -31,7 +34,10 @@ func Test_Serial1(t *testing.T) {
 
 func Test_Serial2(t *testing.T) {
 	ctxExitFunc, n1, n2 := test2Node()
-	s := NewSerial(n2)
+	s := &Serial{
+		Node: n2,
+	}
+	s.Init()
 	s.SubscribeRace([]uint16{1106, 1107, 1108}, testReply)
 	go s.Run()
 	time.Sleep(500 * time.Millisecond)
@@ -46,7 +52,10 @@ func Test_Serial2(t *testing.T) {
 
 func Test_Serial3(t *testing.T) {
 	ctxExitFunc, n1, n2 := test2Node()
-	s := NewSerial(n2)
+	s := &Serial{
+		Node: n2,
+	}
+	s.Init()
 	s.SubscribeAll([]uint16{1201, 1202, 1203}, testRequestAll)
 	go s.Run()
 	time.Sleep(500 * time.Millisecond)
@@ -74,7 +83,10 @@ func testRequestAll(ctx *ContextMQs) {
 
 func Test_Serial4(t *testing.T) {
 	ctxExitFunc, n1, n2 := test2Node()
-	s := NewSerial(n2)
+	s := &Serial{
+		Node: n2,
+	}
+	s.Init()
 	s.SubscribeAll([]uint16{1301, 1302, 1303}, testRequestAll)
 	go s.Run()
 	time.Sleep(500 * time.Millisecond)

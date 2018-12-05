@@ -7,7 +7,7 @@ import (
 )
 
 func Test_Dispatcher(t *testing.T) {
-	d := NewDispatcher("d1", 10)
+	d := NewDispatcher(10)
 	go d.Run()
 	for i := 0; i < 10; i++ {
 		var td testDoJob1
