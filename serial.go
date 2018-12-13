@@ -10,23 +10,24 @@ import (
 	"github.com/duomi520/domi/util"
 )
 
+var globalContextMQHandler [65536]func(*ContextMQ)
+
 //Serial 串行处理
 //一个协程处理一个serial,以避免锁的问题，同时减少协程切换，提高cpu利用率。
 //按时间轮来分配cpu，不适用于cpu密集计算或长IO场景。
 type Serial struct {
-	SnippetDuration  time.Duration //时间间隔
-	contextMQHandler []interface{}
-	channelMap       map[uint16]uint16
-	util.RingBuffer
-	RingBufferSize uint64 //缓存大小
+	SnippetDuration time.Duration //定时调用的时间间隔
+	channelMap      map[uint16]uint16
+	bags            []*bag
 
-	bags []*bag
+	RingBufferSize uint64 //RingBuffer缓存大小
+	util.RingBuffer
+
 	*Node
 
 	unsubscribeChan chan []uint16
-
-	stopChan  chan struct{} //退出信号
-	closeOnce sync.Once
+	stopChan        chan struct{} //退出信号
+	closeOnce       sync.Once
 }
 
 //Close 关闭
@@ -42,10 +43,9 @@ func (s *Serial) Init() {
 		s.SnippetDuration = 10 * time.Microsecond
 	}
 	if s.RingBufferSize == 0 {
-		s.RingBufferSize = 1048576 //默认2^20
+		s.RingBufferSize = 2097152 //默认2^21
 	}
 	s.InitRingBuffer(s.RingBufferSize)
-	s.contextMQHandler = make([]interface{}, 65536)
 	s.channelMap = make(map[uint16]uint16, 256)
 	s.bags = make([]*bag, 0, 64)
 	s.unsubscribeChan = make(chan []uint16, 64)
@@ -75,20 +75,27 @@ func (s *Serial) Run() {
 					}
 				}
 			}
+			for _, v := range u {
+				delete(s.channelMap, v)
+			}
 		case <-s.Node.sidecar.Ctx.Done():
 			s.Close()
 		case <-s.stopChan:
 			//停止输入
-			s.SetState(util.StateWork)
+			s.SetState(util.StateDie)
 			snippet.Stop()
 			for k := range s.channelMap {
-				s.sidecar.HandleFunc(k, nil)
+				s.Unsubscribe(k)
 			}
 			time.Sleep(5 * s.SnippetDuration)
 			s.assignmentTask()
 			//5分钟后强制释放，如果部分Handler时间超过5分钟，最后释放时会产生异常。
 			time.AfterFunc(5*time.Minute, func() {
-				s.contextMQHandler = nil
+				defer func() {
+					if r := recover(); r != nil {
+						s.Logger.Error("Run|释放时异常：", r, string(debug.Stack()))
+					}
+				}()
 				s.channelMap = nil
 				s.ReleaseRingBuffer()
 				s.bags = nil
@@ -107,7 +114,7 @@ func (s *Serial) assignmentTask() {
 		fs := transport.DecodeByBytes(data)
 		c.Request = fs.GetData()
 		c.ex = fs.GetExtend()
-		s.contextMQHandler[fs.GetFrameType()].(func(*ContextMQ))(c)
+		globalContextMQHandler[fs.GetFrameType()](c)
 		s.SetAvailableCursor(available)
 		data, available = s.ReadFromRingBuffer()
 	}
@@ -148,30 +155,39 @@ func (s *Serial) abnormal(f func(*ContextMQ)) func(*ContextMQ) {
 	}
 }
 
-//Subscribe 订阅频道，需在serial.run()运行前执行（线程不安全）。
+//abnormals 异常拦截
+func (s *Serial) abnormals(f func(*ContextMQs)) func(*ContextMQs) {
+	return func(c *ContextMQs) {
+		defer func() {
+			if r := recover(); r != nil {
+				s.Logger.Error("abnormal|异常拦截：", r, string(debug.Stack()))
+			}
+		}()
+		f(c)
+	}
+}
+
+//Subscribe 订阅频道，需在serial运行前执行（线程不安全）。
 func (s *Serial) Subscribe(channel uint16, f func(*ContextMQ)) error {
 	if s.HasWork() {
-		return errors.New("Subscribe|Serial已运行,需在serial.run()运行前执行。")
+		return errors.New("Subscribe|Serial已运行,需在serial运行前执行。")
 	}
-	n := s.Node
-	s.contextMQHandler[channel] = s.abnormal(f)
-	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 3)
-	n.sidecar.HandleFunc(channel, s.serialProcessWrapper)
+	globalContextMQHandler[channel] = s.abnormal(f)
+	s.Node.sidecar.HandleFunc(channel, s.serialProcessWrapper)
 	s.channelMap[channel] = channel
+	s.Node.sidecar.SetChannel(uint16(s.Node.sidecar.MachineID), channel, 3)
 	return nil
 }
 
-//SubscribeRace 订阅频道,某一频道收到信息后，执行f，需在serial.run()运行前执行（线程不安全）。
+//SubscribeRace 订阅一组频道,某一频道收到信息后，执行f，需在serial运行前执行（线程不安全）。
 func (s *Serial) SubscribeRace(channels []uint16, f func(*ContextMQ)) error {
 	if s.HasWork() {
-		return errors.New("SubscribeRace|Serial已运行,需在serial.run()运行前执行。")
+		return errors.New("SubscribeRace|Serial已运行,需在serial运行前执行。")
 	}
-	n := s.Node
 	for _, a := range channels {
-		s.contextMQHandler[a] = s.abnormal(f)
-		n.sidecar.SetChannel(uint16(n.sidecar.MachineID), a, 3)
-		n.sidecar.HandleFunc(a, s.serialProcessWrapper)
-		s.channelMap[a] = a
+		if err := s.Subscribe(a, f); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -185,8 +201,8 @@ type ContextMQs struct {
 
 type bag struct {
 	channelsSize int
-	fs           func(*ContextMQs)
 	channels     []uint16
+	fs           func(*ContextMQs)
 	buf          [][]byte
 }
 
@@ -213,27 +229,25 @@ func (bi bagAndIndex) serialProcessWrapper(c *ContextMQ) {
 	}
 }
 
-//SubscribeAll 订阅频道,全部频道都收到信息后，执行f，需在serial.run()运行前执行（线程不安全）。
+//SubscribeAll 订阅一组频道,全部频道都收到信息后，执行f，需在serial运行前执行（线程不安全）。
 func (s *Serial) SubscribeAll(channels []uint16, fs func(*ContextMQs)) error {
 	if s.HasWork() {
-		return errors.New("SubscribeAll|Serial已运行,需在serial.run()运行前执行。")
+		return errors.New("SubscribeAll|Serial已运行,需在serial运行前执行。")
 	}
-	n := s.Node
 	b := &bag{
 		channelsSize: len(channels),
-		fs:           fs,
-		buf:          make([][]byte, len(channels)),
 		channels:     channels,
+		fs:           s.abnormals(fs),
+		buf:          make([][]byte, len(channels)),
 	}
 	s.bags = append(s.bags, b)
 	ba := bagAndIndex{}
 	ba.bag = b
 	for i, a := range channels {
 		ba.index = i
-		s.contextMQHandler[a] = s.abnormal(ba.serialProcessWrapper)
-		n.sidecar.SetChannel(uint16(n.sidecar.MachineID), a, 3)
-		n.sidecar.HandleFunc(a, s.serialProcessWrapper)
-		s.channelMap[a] = a
+		if err := s.Subscribe(a, ba.serialProcessWrapper); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -241,8 +255,7 @@ func (s *Serial) SubscribeAll(channels []uint16, fs func(*ContextMQs)) error {
 //UnsubscribeGroup 退订频道
 func (s *Serial) UnsubscribeGroup(channels []uint16) error {
 	for _, a := range channels {
-		s.sidecar.HandleFunc(a, nil)
-		s.sidecar.SetChannel(uint16(s.sidecar.MachineID), a, 4)
+		s.Unsubscribe(a)
 	}
 	if !s.HasWork() {
 		return errors.New("UnsubscribeGroup|Serial未运行。")

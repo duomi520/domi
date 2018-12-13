@@ -1,10 +1,8 @@
 ﻿package main
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/duomi520/domi"
+	"log"
 )
 
 //定义
@@ -26,15 +24,16 @@ func main() {
 	app.RunAssembly(n)
 	s := &domi.Serial{
 		Node:           n,
-		RingBufferSize: 67108864, //2^26
+		RingBufferSize: 268435456, //2^30
 	}
 	app.RunAssembly(s)
-	s.Subscribe(ChannelMsg, ping)
+	if err := s.Subscribe(ChannelMsg, ping); err != nil {
+		log.Fatalln(err.Error())
+	}
 	app.Guard()
 }
 func ping(ctx *domi.ContextMQ) {
 	if err := ctx.Reply([]byte("pong")); err != nil {
-		fmt.Println(err.Error())
-		os.Exit(2)
+		log.Fatalln(err.Error())
 	}
 }

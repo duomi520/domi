@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
-	"os"
+	"log"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,30 +38,43 @@ func main() {
 	}
 	app.RunAssembly(node)
 	s := &domi.Serial{
-		Node: node,
+		Node:           node,
+		RingBufferSize: 67108864, //2^26
 	}
 	app.RunAssembly(s)
 	s.Subscribe(ChannelRpl, pong)
-	loop := 20000
-	gNum := 1000
+	lose := 0
+	loop := 2000 //20000
+	gNum := 1000 //1000
 	clientNwg.Add(loop * gNum)
 	start := time.Now()
 	for j := 0; j < gNum; j++ {
 		go func() {
 			for i := 0; i < loop; i++ {
-				if err := s.Call(ChannelMsg, []byte("ping"), ChannelRpl); err != nil {
-					fmt.Println(err)
-					os.Exit(2)
+				lo := true
+				for lo {
+					if err := s.Call(ChannelMsg, []byte("ping"), ChannelRpl); err != nil {
+						if strings.Contains(err.Error(), "ErrConnClose|SessionTCP已关闭") {
+							log.Fatalln(err.Error())
+						}
+						lose++
+						if lose > 1000 {
+							log.Fatalln("lose太多。")
+						}
+						runtime.Gosched()
+					} else {
+						lo = false
+					}
 				}
-
 			}
 		}()
 	}
 	clientNwg.Wait()
 	end := time.Now()
 	qps := float64(loop*gNum) / end.Sub(start).Seconds()
-	fmt.Printf("1个Node运行%d个协程Call:%6.0f\n", gNum, qps)
+	fmt.Printf("1个Node运行%d个协程Call:%6.0f   lose:%d\n", gNum, qps, lose)
 	//num个节点
+	num := 100 //1000
 	for i := 0; i < num; i++ {
 		var hp, tp string
 		cr[i] = uint16(i)
@@ -86,15 +101,14 @@ func main() {
 		app.RunAssembly(n[i])
 		n[i].Subscribe(cr[i], pong)
 	}
-	loop = 10000
+	loop = 1000 //10000
 	clientNwg.Add(loop * num)
 	start = time.Now()
 	for j := 0; j < num; j++ {
 		go func(k int) {
 			for i := 0; i < loop; i++ {
 				if err := n[k].Call(ChannelMsg, []byte("ping"), cr[k]); err != nil {
-					fmt.Println(err)
-					os.Exit(2)
+					log.Fatalln(err.Error())
 				}
 			}
 		}(j)
@@ -109,5 +123,4 @@ func main() {
 
 func pong(ctx *domi.ContextMQ) {
 	clientNwg.Done()
-	//fmt.Println(string(ctx.Request))
 }

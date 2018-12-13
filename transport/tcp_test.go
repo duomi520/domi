@@ -39,7 +39,7 @@ func Test_tcpServer(t *testing.T) {
 func Test_tcpServerPingPong(t *testing.T) {
 	sd := util.NewDispatcher(32)
 	go sd.Run()
-	loop1 := 50000
+	loop1 := 50000 //50000
 	loop2 := loop1 * 2
 	ctx, ctxExitFunc := context.WithCancel(context.Background())
 	h := NewHandler()

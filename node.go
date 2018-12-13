@@ -80,12 +80,12 @@ func (wcs channelWrapper) watchChannelWrapper(s transport.Session) error {
 
 //Subscribe 订阅频道，Process共用tcp读协程，不可有长时间的阻塞或IO。
 func (n *Node) Subscribe(channel uint16, f func(*ContextMQ)) {
-	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 3)
 	pw := processWrapper{
 		n: n,
 		f: f,
 	}
 	n.sidecar.HandleFunc(channel, pw.processWrapper)
+	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 3)
 }
 
 //
@@ -110,8 +110,8 @@ func (pw processWrapper) processWrapper(s transport.Session) error {
 
 //Unsubscribe 退订频道
 func (n *Node) Unsubscribe(channel uint16) {
-	n.sidecar.HandleFunc(channel, nil)
 	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 4)
+	//n.sidecar.HandleFunc(channel, nil)
 }
 
 //Call 请求	request-reply模式 ，使用Call，服务需调用Reply。

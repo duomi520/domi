@@ -3,7 +3,9 @@ package transport
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 //ProtocolMagicNumber 协议头
@@ -20,7 +22,7 @@ const DefaultWaitCloseDuration time.Duration = time.Second * 2
 
 //Handler 帧处理器函数handler
 type Handler struct {
-	frameWorker [65536]interface{}
+	frameWorker [65536]unsafe.Pointer
 }
 
 var errFrameTypeNil = errors.New("读完缓存。")
@@ -47,13 +49,14 @@ func NewHandler() *Handler {
 
 //HandleFunc 添加处理器
 func (h *Handler) HandleFunc(u16 uint16, f func(Session) error) {
-	h.frameWorker[u16] = f
+	atomic.StorePointer(&h.frameWorker[u16], unsafe.Pointer(&f))
 }
 
 //route 帧处理器函数路由
 func (h *Handler) route(ft uint16, s Session) error {
-	if h.frameWorker[ft] != nil {
-		return h.frameWorker[ft].(func(Session) error)(s)
+	f := (*func(Session) error)(atomic.LoadPointer(&h.frameWorker[ft]))
+	if (*f) != nil {
+		return (*f)(s)
 	}
 	return fmt.Errorf("Route|处理器函数为nil。%d", int(ft))
 }

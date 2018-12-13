@@ -51,7 +51,7 @@ func clientN(num int) {
 	sd := util.NewDispatcher(256)
 	go sd.Run()
 	defer sd.Close()
-	loop := 500000000 //500000000
+	loop := 5000000 //500000000
 	//	f, _ := os.Create("profile.mem")
 	//	defer f.Close()
 	var err error

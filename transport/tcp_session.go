@@ -3,6 +3,7 @@ package transport
 import (
 	"errors"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -12,7 +13,7 @@ import (
 )
 
 //BytesPoolLenght 长度
-const BytesPoolLenght int = 16384 //8192,16384,32768
+const BytesPoolLenght int = 32768 //8192,16384,32768,65536,131072
 
 //bytesPool bytesPool 池
 var bytesPool sync.Pool
@@ -39,6 +40,8 @@ func BytesPoolPut(b []byte) {
 var (
 	ErrFailureIORead = errors.New("transport.SessionTCP.ioRead|rBuf缓存溢出。")
 	ErrConnClose     = errors.New("ErrConnClose|SessionTCP已关闭。")
+	ErrFailureToken  = errors.New("transport.SessionTCP.WriteFrameDataToCache|写入太频繁，阻碍IO发送。")
+	ErrFailureBusy   = errors.New("transport.SessionTCP.WriteFrameDataToCache|写入缓存越界超时。")
 )
 
 //SessionTCP 会话
@@ -50,6 +53,10 @@ type SessionTCP struct {
 	w          int //rBuf 读位置序号
 	r          int //rBuf 写位置序号
 	wSlot      unsafe.Pointer
+	_padding0  [8]uint64
+	lock       int32 //写锁定数
+	_padding1  [8]uint64
+	token      int64 //限流令牌
 	closeOnce  sync.Once
 	logger     *util.Logger
 	sync.WaitGroup
@@ -67,6 +74,7 @@ func NewSessionTCP(conn *net.TCPConn, log *util.Logger) *SessionTCP {
 	}
 	ws := newSlot(s)
 	s.wSlot = unsafe.Pointer(&ws)
+	busyLimit = uint32(runtime.NumCPU()) * 2
 	return s
 }
 
@@ -145,6 +153,8 @@ func (s *SessionTCP) WriteFrameDataPromptly(f FrameSlice) error {
 	return err
 }
 
+var busyLimit uint32
+
 //WriteFrameDataToCache 写入发送缓存
 func (s *SessionTCP) WriteFrameDataToCache(f FrameSlice) error {
 	if !s.hasWork() {
@@ -153,21 +163,27 @@ func (s *SessionTCP) WriteFrameDataToCache(f FrameSlice) error {
 	if f.GetFrameLength() >= BytesPoolLenght {
 		return s.WriteFrameDataPromptly(f)
 	}
+	if atomic.LoadInt64(&s.token) > 1000 {
+		return ErrFailureToken
+	}
 	length := uint32(f.GetFrameLength())
 	var myslot *slot
-	var end, start uint32
+	var end, start, busy uint32
 	bytesPoolLenght32 := uint32(BytesPoolLenght)
+	atomic.AddInt32(&s.lock, 1)
 loop:
 	myslot = (*slot)(atomic.LoadPointer(&s.wSlot))
-	//这里会产生竟态 TODO 消除
-	atomic.AddInt32(&myslot.lock, 1)
 	end = atomic.AddUint32(&myslot.allotCursor, length)
 	start = end - length
 	if end > bytesPoolLenght32 {
 		//申请的地址超出边界
-		if start >= bytesPoolLenght32 {
-			atomic.AddInt32(&myslot.lock, -1)
-			time.Sleep(time.Microsecond)
+		if start > bytesPoolLenght32 {
+			if busy > busyLimit {
+				atomic.AddInt32(&s.lock, -1)
+				return ErrFailureBusy
+			}
+			busy++
+			runtime.Gosched()
 			goto loop
 		}
 		//刚好越界触发
@@ -175,12 +191,12 @@ loop:
 		if !atomic.CompareAndSwapPointer(&s.wSlot, unsafe.Pointer(myslot), unsafe.Pointer(&ns)) {
 			ns.release()
 		}
-		atomic.AddInt32(&myslot.lock, -1)
+		busy = 0
 		goto loop
 	}
 	f.WriteToBytes(myslot.buf[start:end])
 	atomic.AddUint32(&myslot.availableCursor, length)
-	atomic.AddInt32(&myslot.lock, -1)
+	atomic.AddInt32(&s.lock, -1)
 	//新的slot触发
 	if start == 0 {
 		s.Add(1)
@@ -220,8 +236,6 @@ type slot struct {
 	allotCursor     uint32 //申请位置
 	_padding1       [8]uint64
 	availableCursor uint32 //已提交位置
-	_padding2       [8]uint64
-	lock            int32 //占用数
 }
 
 func newSlot(s *SessionTCP) slot {
@@ -243,11 +257,13 @@ func (ws *slot) WorkFunc() {
 	if !atomic.CompareAndSwapPointer(&ws.session.wSlot, unsafe.Pointer(ws), unsafe.Pointer(&ns)) {
 		ns.release()
 	}
-	//自旋等待其它协程提交
-	time.Sleep(time.Microsecond)
-	for atomic.LoadInt32(&ws.lock) != 0 {
-		time.Sleep(time.Microsecond)
+	start := time.Now().Unix()
+	//自旋等待其它协程提交。
+	for atomic.LoadInt32(&ws.session.lock) != 0 {
+		atomic.StoreInt64(&ws.session.token, time.Now().Unix()-start)
+		runtime.Gosched()
 	}
+	atomic.StoreInt64(&ws.session.token, 0)
 	if ws.availableCursor >= uint32(FrameHeadLength) {
 		if err := ws.session.Conn.SetWriteDeadline(time.Now().Add(DefaultDeadlineDuration)); err != nil {
 			ws.session.logger.Error("WorkFunc|超时:", err.Error())
