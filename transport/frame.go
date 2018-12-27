@@ -29,6 +29,7 @@ const (
 	FrameType8
 	FrameType9
 	FrameTypeNodeName
+	FrameSerialRejectFunc
 )
 
 //定义

@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +43,19 @@ func main() {
 	app.RunAssembly(s)
 	s.Subscribe(ChannelRpl, pong)
 	lose := 0
+	s.RejectFunc(55, func(status int, err error) {
+		if strings.Contains(err.Error(), "ErrConnClose|SessionTCP已关闭") {
+			log.Fatalln(status, err.Error())
+		}
+		lose++
+		clientNwg.Done()
+		if lose > 1000 {
+			log.Fatalln("lose太多。")
+		}
+	})
+	s.RejectFunc(56, func(status int, err error) {
+		log.Fatalln(err.Error())
+	})
 	loop := 2000 //20000
 	gNum := 1000 //1000
 	clientNwg.Add(loop * gNum)
@@ -51,21 +63,7 @@ func main() {
 	for j := 0; j < gNum; j++ {
 		go func() {
 			for i := 0; i < loop; i++ {
-				lo := true
-				for lo {
-					if err := s.Call(ChannelMsg, []byte("ping"), ChannelRpl); err != nil {
-						if strings.Contains(err.Error(), "ErrConnClose|SessionTCP已关闭") {
-							log.Fatalln(err.Error())
-						}
-						lose++
-						if lose > 1000 {
-							log.Fatalln("lose太多。")
-						}
-						runtime.Gosched()
-					} else {
-						lo = false
-					}
-				}
+				s.Call(ChannelMsg, []byte("ping"), ChannelRpl, 55)
 			}
 		}()
 	}
@@ -107,9 +105,7 @@ func main() {
 	for j := 0; j < num; j++ {
 		go func(k int) {
 			for i := 0; i < loop; i++ {
-				if err := n[k].Call(ChannelMsg, []byte("ping"), cr[k]); err != nil {
-					log.Fatalln(err.Error())
-				}
+				n[k].Call(ChannelMsg, []byte("ping"), cr[k], 56)
 			}
 		}(j)
 	}

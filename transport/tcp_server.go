@@ -16,6 +16,7 @@ import (
 type ServerTCP struct {
 	ctx         context.Context
 	dispatcher  *util.Dispatcher
+	limiter     *util.Limiter
 	tcpAddress  *net.TCPAddr
 	tcpListener *net.TCPListener
 	tcpPost     string
@@ -25,7 +26,7 @@ type ServerTCP struct {
 }
 
 //NewServerTCP 新建
-func NewServerTCP(ctx context.Context, post string, h *Handler, sd *util.Dispatcher) *ServerTCP {
+func NewServerTCP(ctx context.Context, post string, h *Handler, sd *util.Dispatcher, limiter *util.Limiter) *ServerTCP {
 	logger, _ := util.NewLogger(util.ErrorLevel, "")
 	logger.SetMark("ServerTCP")
 	if h == nil {
@@ -43,6 +44,7 @@ func NewServerTCP(ctx context.Context, post string, h *Handler, sd *util.Dispatc
 		tcpAddress:  tcpAddress,
 		tcpListener: listener,
 		tcpPost:     post,
+		limiter:     limiter,
 		handler:     h,
 		Logger:      logger,
 	}
@@ -100,7 +102,7 @@ func tcpReceive(s *ServerTCP, conn *net.TCPConn) {
 			s.Logger.Error("tcpReceive|defer错误：", r, string(debug.Stack()))
 		}
 	}()
-	session := NewSessionTCP(conn, s.Logger)
+	session := NewSessionTCP(conn, s.handler)
 	session.dispatcher = s.dispatcher
 	s.Add(1)
 	defer func() {
@@ -134,18 +136,23 @@ func (s *ServerTCP) ioLoop(session *SessionTCP) error {
 		}
 	}()
 	for {
-	loop:
-		if err := session.ioRead(); err != nil {
+		n, err := session.ioRead()
+		if err != nil {
 			if strings.Contains(err.Error(), "use of closed network connection") {
 				return nil
 			}
 			return err
 		}
+		//限流器阻塞
+		if s.limiter != nil {
+			s.limiter.Wait(int64(n))
+		}
+		//处理数据
 		for {
 			ft := session.getFrameType()
 			if err := s.handler.route(ft, session); err != nil {
 				if ft == FrameTypeNil {
-					goto loop
+					break
 				}
 				if ft == FrameTypeExit {
 					return nil

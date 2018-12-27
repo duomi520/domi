@@ -27,13 +27,12 @@ func main() {
 		RingBufferSize: 268435456, //2^30
 	}
 	app.RunAssembly(s)
-	if err := s.Subscribe(ChannelMsg, ping); err != nil {
-		log.Fatalln(err.Error())
-	}
+	s.Subscribe(ChannelMsg, ping)
+	s.RejectFunc(55, func(status int, err error) {
+		log.Fatalln(status, err.Error())
+	})
 	app.Guard()
 }
 func ping(ctx *domi.ContextMQ) {
-	if err := ctx.Reply([]byte("pong")); err != nil {
-		log.Fatalln(err.Error())
-	}
+	ctx.Reply([]byte("pong"), 55)
 }

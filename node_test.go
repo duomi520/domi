@@ -3,6 +3,7 @@ package domi
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 var testEndpoints = []string{"localhost:2379"}
 
+var testNodeTableMutex sync.Mutex
 var testNodeTable []string
 
 func testTableVerification(t *testing.T, s []string) {
@@ -137,11 +139,9 @@ func Test_ReqRep1(t *testing.T) {
 	ctxExitFunc, n1, n2 := test2Node(100)
 	n2.Subscribe(56, testRequest)
 	n1.Subscribe(57, testReply)
+	n1.RejectFunc(58, testError)
 	time.Sleep(500 * time.Millisecond)
-	err := n1.Call(56, []byte("Hellow"), 57)
-	if err != nil {
-		t.Error(err.Error())
-	}
+	n1.Call(56, []byte("Hellow"), 57, 58)
 	time.Sleep(50 * time.Millisecond)
 	ctxExitFunc()
 	time.Sleep(50 * time.Millisecond)
@@ -155,11 +155,9 @@ func Test_ReqRep2(t *testing.T) {
 	ctxExitFunc, n1, n2 := test2Node(110)
 	n2.Subscribe(56, testRequest)
 	n1.Subscribe(57, testReply)
+	n1.RejectFunc(58, testError)
 	time.Sleep(500 * time.Millisecond)
-	err := n1.Call(56, []byte("Hellow"), 57)
-	if err != nil {
-		t.Error(err.Error())
-	}
+	n1.Call(56, []byte("Hellow"), 57, 58)
 	time.Sleep(50 * time.Millisecond)
 	ctxExitFunc()
 	time.Sleep(50 * time.Millisecond)
@@ -169,17 +167,27 @@ func Test_ReqRep2(t *testing.T) {
 	})
 }
 
+func testError(status int, err error) {
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+}
 func testRequest(ctx *ContextMQ) {
 	text := strconv.Itoa(ctx.sidecar.MachineID) + " testRequest:" + string(ctx.Request)
-	ctx.Reply([]byte("Hi"))
+	ctx.Reply([]byte("Hi"), 0)
+	testNodeTableMutex.Lock()
 	testNodeTable = append(testNodeTable, text)
+	testNodeTableMutex.Unlock()
 }
 
 func testReply(ctx *ContextMQ) {
 	text := strconv.Itoa(ctx.sidecar.MachineID) + " testReply:" + string(ctx.Request)
+	testNodeTableMutex.Lock()
 	testNodeTable = append(testNodeTable, text)
+	testNodeTableMutex.Unlock()
 }
 
+/*
 //管道（pipeline） ventilator  worker  sink  1 TO 1 TO 1
 
 var pipelineWg sync.WaitGroup
@@ -203,7 +211,9 @@ func Test_Pipeline1(t *testing.T) {
 }
 func testWorker(ctx *ContextMQ) {
 	text := ctx.sidecar.Name + " testWorker:" + string(ctx.Request)
+	testNodeTableMutex.Lock()
 	testNodeTable = append(testNodeTable, text)
+	testNodeTableMutex.Unlock()
 	d := make([]byte, len(ctx.Request))
 	copy(d, ctx.Request)
 	d = append(d, []byte("->"+ctx.sidecar.Name)...)
@@ -212,9 +222,12 @@ func testWorker(ctx *ContextMQ) {
 
 func testSink(ctx *ContextMQ) {
 	text := ctx.sidecar.Name + " testSink:" + string(ctx.Request)
+	testNodeTableMutex.Lock()
 	testNodeTable = append(testNodeTable, text)
+	testNodeTableMutex.Unlock()
 	pipelineWg.Done()
 }
+*/
 
 //发布者-订阅者（pubsub publisher-subscriber）1 TO N
 func Test_PubSub1(t *testing.T) {
@@ -224,8 +237,9 @@ func Test_PubSub1(t *testing.T) {
 	n2.Subscribe(channel, testReply)
 	n3.Subscribe(channel, testReply)
 	n4.Subscribe(channel, testReply)
+	n1.RejectFunc(61, testError)
 	time.Sleep(1000 * time.Millisecond)
-	n1.Publish(channel, []byte("Broadcast"))
+	n1.Publish(channel, []byte("Broadcast"), 61)
 	time.Sleep(50 * time.Millisecond)
 	ctxExitFunc()
 	time.Sleep(50 * time.Millisecond)
@@ -242,12 +256,13 @@ func Test_PubSub2(t *testing.T) {
 	var channel uint16 = 61
 	n1.Subscribe(channel, testReply)
 	n2.Subscribe(channel, testReply)
+	n1.RejectFunc(62, testError)
 	time.Sleep(1000 * time.Millisecond)
-	n1.Publish(channel, []byte("Broadcast1"))
+	n1.Publish(channel, []byte("Broadcast1"), 62)
 	time.Sleep(50 * time.Millisecond)
 	n2.Unsubscribe(channel)
-	time.Sleep(1000 * time.Millisecond)
-	n1.Publish(channel, []byte("Broadcast2"))
+	time.Sleep(1500 * time.Millisecond)
+	n1.Publish(channel, []byte("Broadcast2"), 62)
 	time.Sleep(50 * time.Millisecond)
 	ctxExitFunc()
 	time.Sleep(50 * time.Millisecond)
@@ -267,9 +282,9 @@ func Test_Bus1(t *testing.T) {
 	n3.Subscribe(bus, testReply)
 	n4.Subscribe(bus, testReply)
 	time.Sleep(1000 * time.Millisecond)
-	n1.Publish(bus, []byte("Broadcast1"))
-	n2.Publish(bus, []byte("Broadcast2"))
-	time.Sleep(50 * time.Millisecond)
+	n1.Publish(bus, []byte("Broadcast1"), 0)
+	n2.Publish(bus, []byte("Broadcast2"), 0)
+	time.Sleep(150 * time.Millisecond)
 	ctxExitFunc()
 	time.Sleep(50 * time.Millisecond)
 	testTableVerificationDisorder(t, []string{
@@ -292,15 +307,15 @@ func Test_Bus2(t *testing.T) {
 	n3.Subscribe(bus, testReply)
 	n4.Subscribe(bus, testReply)
 	time.Sleep(1000 * time.Millisecond)
-	n1.Publish(bus, []byte("speech1"))
+	n1.Publish(bus, []byte("speech1"), 0)
 	time.Sleep(50 * time.Millisecond)
 	n1.Unsubscribe(bus)
 	time.Sleep(1000 * time.Millisecond)
-	n3.Publish(bus, []byte("speech2"))
+	n3.Publish(bus, []byte("speech2"), 0)
 	time.Sleep(50 * time.Millisecond)
 	n3.Unsubscribe(bus)
 	time.Sleep(1000 * time.Millisecond)
-	n2.Publish(bus, []byte("speech3"))
+	n2.Publish(bus, []byte("speech3"), 0)
 	time.Sleep(50 * time.Millisecond)
 	n4.Unsubscribe(bus)
 	time.Sleep(1000 * time.Millisecond)
@@ -322,12 +337,10 @@ func Test_Bus2(t *testing.T) {
 func Test_WatchChannel(t *testing.T) {
 	ctxExitFunc, n1, n2 := test2Node(170)
 	cc := make(chan []byte)
+	n1.RejectFunc(91, testError)
 	n2.WatchChannel(90, cc)
 	time.Sleep(500 * time.Millisecond)
-	err := n1.Notify(90, []byte("Hellow"))
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	n1.Call(90, []byte("Hellow"), 0, 91)
 	data := <-cc
 	if !bytes.Equal([]byte("Hellow"), data) {
 		t.Error("ERR:", data)

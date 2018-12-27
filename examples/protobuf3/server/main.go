@@ -14,7 +14,6 @@ const (
 	ChannelRpl
 )
 
-//无状态的服务
 func main() {
 	app := domi.NewMaster()
 	r := &domi.Node{
@@ -35,6 +34,9 @@ func reply(ctx *domi.ContextMQ) {
 		log.Fatalln(err.Error())
 	} else {
 		log.Println(m.Data)
-		ctx.Reply([]byte(strings.ToUpper(m.Data)))
+		ctx.Node.RejectFunc(100, func(status int, err error) {
+			log.Println(status, err.Error())
+		})
+		ctx.Reply([]byte(strings.ToUpper(m.Data)), 100)
 	}
 }

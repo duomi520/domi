@@ -34,9 +34,10 @@ func main() {
 		if err != nil {
 			log.Fatalln(err.Error())
 		}
-		if err := r.Call(ChannelMsg, out, ChannelRpl); err != nil {
-			log.Println(err.Error())
-		}
+		r.RejectFunc(100, func(status int, err error) {
+			log.Fatalln(status, err.Error())
+		})
+		r.Call(ChannelMsg, out, ChannelRpl, 100)
 		app.Guard()
 	}
 }

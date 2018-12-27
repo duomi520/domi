@@ -2,6 +2,7 @@ package transport
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"runtime"
 	"sync"
@@ -15,25 +16,46 @@ import (
 //BytesPoolLenght 长度
 const BytesPoolLenght int = 32768 //8192,16384,32768,65536,131072
 
-//bytesPool bytesPool 池
+//池
 var bytesPool sync.Pool
+var rejectPool sync.Pool
+var frameTypeNilRejects = make([]uint16, BytesPoolLenght/8)
 
 func init() {
 	bytesPool.New = func() interface{} {
 		b := make([]byte, BytesPoolLenght)
 		return b[:]
 	}
+	rejectPool.New = func() interface{} {
+		b := make([]uint16, BytesPoolLenght/8)
+		return b[:]
+	}
+	for i := 0; i < len(frameTypeNilRejects); i++ {
+		frameTypeNilRejects[i] = FrameTypeNil
+	}
 }
 
-//BytesPoolGet 取一个
-func BytesPoolGet() []byte {
+//bytesPoolGet 取一个
+func bytesPoolGet() []byte {
 	b := bytesPool.Get().([]byte)
 	return b[:]
 }
 
-//BytesPoolPut 还一个
-func BytesPoolPut(b []byte) {
+//bytesPoolPut 还一个
+func bytesPoolPut(b []byte) {
 	bytesPool.Put(b)
+}
+
+//rejectPoolGet 取一个
+func rejectPoolGet() []uint16 {
+	b := rejectPool.Get().([]uint16)
+	return b[:]
+}
+
+//rejectPoolPut 还一个
+func rejectPoolPut(b []uint16) {
+	copy(b, frameTypeNilRejects)
+	rejectPool.Put(b)
 }
 
 //定义错误
@@ -48,6 +70,7 @@ var (
 type SessionTCP struct {
 	Conn       *net.TCPConn
 	dispatcher *util.Dispatcher
+	handler    *Handler
 	state      uint32
 	rBuf       []byte
 	w          int //rBuf 读位置序号
@@ -58,19 +81,18 @@ type SessionTCP struct {
 	_padding1  [8]uint64
 	token      int64 //限流令牌
 	closeOnce  sync.Once
-	logger     *util.Logger
 	sync.WaitGroup
 }
 
 //NewSessionTCP 新建
-func NewSessionTCP(conn *net.TCPConn, log *util.Logger) *SessionTCP {
+func NewSessionTCP(conn *net.TCPConn, h *Handler) *SessionTCP {
 	s := &SessionTCP{
-		Conn:   conn,
-		state:  util.StateWork,
-		rBuf:   BytesPoolGet(),
-		r:      0,
-		w:      0,
-		logger: log,
+		Conn:    conn,
+		handler: h,
+		state:   util.StateWork,
+		rBuf:    bytesPoolGet(),
+		r:       0,
+		w:       0,
 	}
 	ws := newSlot(s)
 	s.wSlot = unsafe.Pointer(&ws)
@@ -85,7 +107,7 @@ func (s *SessionTCP) Close() {
 		s.Wait()
 		s.Conn.Close()
 		time.AfterFunc(5*time.Second, func() {
-			BytesPoolPut(s.rBuf)
+			bytesPoolPut(s.rBuf)
 			(*slot)(s.wSlot).release()
 		})
 	})
@@ -117,7 +139,7 @@ func (s *SessionTCP) getFrameType() uint16 {
 
 //ioRead 读数据到rBuf，注意：每次ioRead,rBuf中的数据将被写入新数据。
 //注意线程不安全
-func (s *SessionTCP) ioRead() error {
+func (s *SessionTCP) ioRead() (int, error) {
 	if s.r > 0 {
 		if s.r < s.w {
 			copy(s.rBuf, s.rBuf[s.r:s.w])
@@ -127,7 +149,7 @@ func (s *SessionTCP) ioRead() error {
 		}
 	}
 	if s.w >= len(s.rBuf) {
-		return ErrFailureIORead
+		return 0, ErrFailureIORead
 	}
 	//	if err := s.Conn.SetReadDeadline(time.Now().Add(DefaultDeadlineDuration)); err != nil {
 	//		return err
@@ -135,10 +157,10 @@ func (s *SessionTCP) ioRead() error {
 	n, err := s.Conn.Read(s.rBuf[s.w:])
 	s.r = 0
 	s.w += n
-	return err
+	return s.w - s.r, err
 }
 
-//WriteFrameDataPromptly 立即发送数据 without delay
+//WriteFrameDataPromptly 同步发送数据 without delay
 func (s *SessionTCP) WriteFrameDataPromptly(f FrameSlice) error {
 	if !s.hasWork() {
 		return ErrConnClose
@@ -155,16 +177,25 @@ func (s *SessionTCP) WriteFrameDataPromptly(f FrameSlice) error {
 
 var busyLimit uint32
 
-//WriteFrameDataToCache 写入发送缓存
-func (s *SessionTCP) WriteFrameDataToCache(f FrameSlice) error {
+//WriteFrameDataToCache 写入发送缓存,由线程池异步发送
+func (s *SessionTCP) WriteFrameDataToCache(f FrameSlice, errHandle uint16) {
 	if !s.hasWork() {
-		return ErrConnClose
+		s.handler.ErrorRoute(errHandle, 222, ErrConnClose)
+		return
 	}
 	if f.GetFrameLength() >= BytesPoolLenght {
-		return s.WriteFrameDataPromptly(f)
+		s.Add(1)
+		go func() {
+			if err := s.WriteFrameDataPromptly(f); err != nil {
+				s.handler.ErrorRoute(errHandle, 222, err)
+			}
+			s.Done()
+		}()
+		return
 	}
 	if atomic.LoadInt64(&s.token) > 1000 {
-		return ErrFailureToken
+		s.handler.ErrorRoute(errHandle, 222, ErrFailureToken)
+		return
 	}
 	length := uint32(f.GetFrameLength())
 	var myslot *slot
@@ -180,7 +211,8 @@ loop:
 		if start > bytesPoolLenght32 {
 			if busy > busyLimit {
 				atomic.AddInt32(&s.lock, -1)
-				return ErrFailureBusy
+				s.handler.ErrorRoute(errHandle, 222, ErrFailureBusy)
+				return
 			}
 			busy++
 			runtime.Gosched()
@@ -195,6 +227,7 @@ loop:
 		goto loop
 	}
 	f.WriteToBytes(myslot.buf[start:end])
+	myslot.rejects[start>>3] = errHandle
 	atomic.AddUint32(&myslot.availableCursor, length)
 	atomic.AddInt32(&s.lock, -1)
 	//新的slot触发
@@ -202,7 +235,6 @@ loop:
 		s.Add(1)
 		s.dispatcher.JobQueue <- myslot
 	}
-	return nil
 }
 
 //hasWork 是否工作
@@ -232,6 +264,7 @@ func (s *SessionTCP) readUint32() (uint32, error) {
 type slot struct {
 	session         *SessionTCP
 	buf             []byte
+	rejects         []uint16
 	_padding0       [8]uint64
 	allotCursor     uint32 //申请位置
 	_padding1       [8]uint64
@@ -241,14 +274,23 @@ type slot struct {
 func newSlot(s *SessionTCP) slot {
 	return slot{
 		session: s,
-		buf:     BytesPoolGet(),
+		buf:     bytesPoolGet(),
+		rejects: rejectPoolGet(),
 	}
 }
 
-//WorkFunc 发送
+//release 释放
 func (ws *slot) release() {
-	BytesPoolPut(ws.buf)
+	bytesPoolPut(ws.buf)
+	rejectPoolPut(ws.rejects)
 	ws.session = nil
+}
+
+//rejectsRange 遍历处理错误
+func (ws *slot) rejectsRange(status int, err error) {
+	for _, r := range ws.rejects {
+		ws.session.handler.ErrorRoute(r, status, err)
+	}
 }
 
 //WorkFunc 发送
@@ -266,13 +308,14 @@ func (ws *slot) WorkFunc() {
 	atomic.StoreInt64(&ws.session.token, 0)
 	if ws.availableCursor >= uint32(FrameHeadLength) {
 		if err := ws.session.Conn.SetWriteDeadline(time.Now().Add(DefaultDeadlineDuration)); err != nil {
-			ws.session.logger.Error("WorkFunc|超时:", err.Error())
+			ws.rejectsRange(333, err)
 		}
 		if _, err := ws.session.Conn.Write(ws.buf[:ws.availableCursor]); err != nil {
-			ws.session.logger.Error("WorkFunc|错误:", err.Error())
+			ws.rejectsRange(333, err)
 		}
 	} else {
-		//ws.session.logger.Error("WorkFunc|:", ws.availableCursor)
+		err := fmt.Errorf("WorkFunc|availableCursor异常:%d", ws.availableCursor)
+		ws.rejectsRange(333, err)
 	}
 	ws.session.Done()
 	ws.release()

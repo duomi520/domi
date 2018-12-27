@@ -3,7 +3,6 @@
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"runtime"
 
@@ -27,40 +26,28 @@ func main() {
 	//	clientN(10000)
 }
 
-func dial() *transport.SessionTCP {
-	logger, _ := util.NewLogger(util.ErrorLevel, "")
-	tcpAddr, err := net.ResolveTCPAddr("tcp4", "127.0.0.1:4567")
-	conn, err := net.DialTCP("tcp", nil, tcpAddr)
-	if err != nil {
-		fmt.Println("连接服务端失败:", err.Error())
-		os.Exit(1)
-	}
-	session := transport.NewSessionTCP(conn, logger)
-	b := make([]byte, 4)
-	util.CopyUint32(b, transport.ProtocolMagicNumber)
-	if _, err = conn.Write(b); err != nil {
-		fmt.Println("ProtocolMagicNumber:", err)
-		os.Exit(1)
-	}
-	return session
-}
-
 var clientNwg sync.WaitGroup
 
 func clientN(num int) {
 	sd := util.NewDispatcher(256)
 	go sd.Run()
 	defer sd.Close()
-	loop := 5000000 //500000000
+	loop := 50000000 //500000000
 	//	f, _ := os.Create("profile.mem")
 	//	defer f.Close()
 	var err error
 	h := transport.NewHandler()
 	h.HandleFunc(transport.FrameTypePong, pongFunc)
+	h.ErrorFunc(78, func(status int, err error) {
+		if err != nil {
+			fmt.Println(err.Error())
+			os.Exit(1)
+		}
+	})
 	cs := make([]*transport.ClientTCP, num)
 	for i := 0; i < num; i++ {
 		k := i
-		cs[i], err = transport.NewClientTCP(context.TODO(), "127.0.0.1:4567", h, sd)
+		cs[i], err = transport.NewClientTCP(context.TODO(), "127.0.0.1:4567", h, sd, nil)
 		if err != nil {
 			fmt.Println("连接服务端失败:", err.Error())
 			os.Exit(1)
@@ -74,10 +61,7 @@ func clientN(num int) {
 	start := time.Now()
 	for i := 0; i < loop; i++ {
 		index := i % num
-		if err = cs[index].Csession.WriteFrameDataToCache(transport.FramePing); err != nil {
-			fmt.Println(err.Error())
-			os.Exit(1)
-		}
+		cs[index].Csession.WriteFrameDataToCache(transport.FramePing, 78)
 		//cs[index].Csession.WriteFrameDataPromptly(transport.FramePing)
 	}
 	clientNwg.Wait()

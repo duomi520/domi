@@ -12,8 +12,13 @@ func main() {
 	h := transport.NewHandler()
 	sd := util.NewDispatcher(256)
 	go sd.Run()
-	s := transport.NewServerTCP(a.Ctx, ":4567", h, sd)
+	s := transport.NewServerTCP(a.Ctx, ":4567", h, sd, nil)
 	h.HandleFunc(transport.FrameTypePing, ping)
+	h.ErrorFunc(77, func(status int, err error) {
+		if err != nil {
+			log.Fatalln("ping:", err.Error())
+		}
+	})
 	if s == nil {
 		log.Fatalln("启动tcp服务失败。")
 	}
@@ -23,9 +28,7 @@ func main() {
 	sd.Close()
 }
 func ping(s transport.Session) error {
-	if err := s.WriteFrameDataToCache(transport.FramePong); err != nil {
-		log.Fatalln("ping:", err.Error())
-	}
+	s.WriteFrameDataToCache(transport.FramePong, 77)
 	return nil
 	//	if err := s.WriteFrameDataPromptly(transport.FramePong); err != nil {
 	//		fmt.Println("ping:", err.Error())

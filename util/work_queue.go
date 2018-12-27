@@ -56,8 +56,7 @@ type Dispatcher struct {
 	workerPool      []chan Job    //空闲工作者池
 	workerPoolCount int           //池的协程数
 
-	stopChan chan struct{} //退出信号
-
+	stopChan  chan struct{} //退出信号
 	closeOnce sync.Once
 	logger    *Logger
 	WaitGroupWrapper

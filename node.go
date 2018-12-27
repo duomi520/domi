@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"runtime/debug"
+	"time"
 	"unsafe"
 
 	"github.com/duomi520/domi/sidecar"
@@ -17,7 +18,9 @@ type Node struct {
 	Ctx                     context.Context
 	ExitFunc                func()
 	Name, HTTPPort, TCPPort string
-	Endpoints               []string
+	Endpoints               []string //etcd 地址
+	LimitRate               int64    //限流器速率
+	LimitSize               int64    //限流器大小
 	Logger                  *util.Logger
 }
 
@@ -28,7 +31,7 @@ func (n *Node) Run() {
 
 //Init 初始化
 func (n *Node) Init() {
-	n.sidecar = sidecar.NewSidecar(n.Ctx, n.ExitFunc, n.Name, n.HTTPPort, n.TCPPort, n.Endpoints)
+	n.sidecar = sidecar.NewSidecar(n.Ctx, n.ExitFunc, n.Name, n.HTTPPort, n.TCPPort, n.Endpoints, n.LimitRate, n.LimitSize)
 	n.Logger = n.sidecar.Logger
 	n.Logger.SetLevel(util.ErrorLevel)
 }
@@ -38,6 +41,7 @@ func (n *Node) WaitInit() {
 	n.sidecar.WaitInit()
 }
 
+/*
 //Pause 使服务暂停
 func (n *Node) Pause() {
 	n.sidecar.SetState(util.StatePause)
@@ -47,6 +51,7 @@ func (n *Node) Pause() {
 func (n *Node) Work() {
 	n.sidecar.SetState(util.StateWork)
 }
+*/
 
 //IsWorking 是否工作状态
 func (n *Node) IsWorking() bool {
@@ -54,6 +59,7 @@ func (n *Node) IsWorking() bool {
 }
 
 type channelWrapper struct {
+	n  *Node
 	cc chan []byte
 }
 type processWrapper struct {
@@ -64,6 +70,7 @@ type processWrapper struct {
 //WatchChannel 监听频道 将读取到数据存入chan
 func (n *Node) WatchChannel(channel uint16, cc chan []byte) {
 	cs := channelWrapper{
+		n:  n,
 		cc: cc,
 	}
 	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 3)
@@ -74,7 +81,12 @@ func (wcs channelWrapper) watchChannelWrapper(s transport.Session) error {
 	fd := s.GetFrameSlice().GetData()
 	data := make([]byte, len(fd))
 	copy(data, fd)
-	wcs.cc <- data
+	timeout := time.After(time.Second)
+	select {
+	case wcs.cc <- data:
+	case <-timeout:
+		wcs.n.Logger.Error("watchChannelWrapper|写入chan超时。")
+	}
 	return nil
 }
 
@@ -86,6 +98,11 @@ func (n *Node) Subscribe(channel uint16, f func(*ContextMQ)) {
 	}
 	n.sidecar.HandleFunc(channel, pw.processWrapper)
 	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 3)
+}
+
+//RejectFunc 内部错误处理函数
+func (n *Node) RejectFunc(u16 uint16, f func(int, error)) {
+	n.sidecar.ErrorFunc(u16, f)
 }
 
 //
@@ -114,25 +131,27 @@ func (n *Node) Unsubscribe(channel uint16) {
 	//n.sidecar.HandleFunc(channel, nil)
 }
 
-//Call 请求	request-reply模式 ，使用Call，服务需调用Reply。
-func (n *Node) Call(channel uint16, data []byte, reply uint16) error {
+//Notify 不回复请求，申请一服务处理。
+func (n *Node) Notify(channel uint16, data []byte, reject uint16) {
+	fs := transport.NewFrameSlice(channel, data, nil)
+	n.sidecar.AskOne(channel, fs, reject)
+}
+
+//Call 请求	request-reply模式, 1 Vs 1
+func (n *Node) Call(channel uint16, data []byte, resolve, reject uint16) {
 	ex := make([]byte, 4)
 	util.CopyUint16(ex[:2], uint16(n.sidecar.MachineID))
-	util.CopyUint16(ex[2:], reply)
+	util.CopyUint16(ex[2:], resolve)
 	fs := transport.NewFrameSlice(channel, data, ex)
-	return n.sidecar.AskOne(channel, fs)
+	n.sidecar.AskOne(channel, fs, reject)
 }
 
-//Notify 不回复请求，申请一服务处理。
-func (n *Node) Notify(channel uint16, data []byte) error {
-	fs := transport.NewFrameSlice(channel, data, nil)
-	return n.sidecar.AskOne(channel, fs)
-}
-
+/*
 //Ventilator 开始 pipeline模式，数据在不同服务之间传递，后续服务需调用Next，最后一个服务不可调用Next。
-func (n *Node) Ventilator(channel []uint16, data []byte) error {
+func (n *Node) Ventilator(channel []uint16, data []byte, reject func(error)) {
 	if len(channel) < 2 {
-		return errors.New("Ventilator|频道数量小于2")
+		reject(errors.New("Ventilator|频道数量小于2"))
+		return
 	}
 	l := len(channel)
 	vj := make([]byte, 2*l)
@@ -140,14 +159,15 @@ func (n *Node) Ventilator(channel []uint16, data []byte) error {
 		util.CopyUint16(vj[2*i:2*i+2], channel[i])
 	}
 	fs := transport.NewFrameSlice(channel[0], data, vj[2:])
-	return n.sidecar.AskOne(channel[0], fs)
+	n.sidecar.AskOne(channel[0], fs, reject)
 }
+*/
 
-//Publish 发布，通知所有订阅频道的节点
+//Publish 发布，通知所有订阅频道的节点,1 Vs N
 //只有一个节点发表时为publisher-subscriber模式，所有节点都能发表为bus模式
-func (n *Node) Publish(channel uint16, data []byte) error {
+func (n *Node) Publish(channel uint16, data []byte, reject uint16) {
 	fs := transport.NewFrameSlice(channel, data, nil)
-	return n.sidecar.AskAll(channel, fs)
+	n.sidecar.AskAll(channel, fs, reject)
 }
 
 //ContextMQ 上下文
@@ -157,30 +177,35 @@ type ContextMQ struct {
 	ex      []byte
 }
 
-//Reply 回复 request-reply模式 ，源使用Call，目标需调用Reply
-func (c *ContextMQ) Reply(data []byte) error {
+//Reply 回复 request-reply模式 。
+func (c *ContextMQ) Reply(data []byte, reject uint16) {
 	if c.ex == nil {
-		return errors.New("Reply|需ex。")
+		c.Node.sidecar.ErrorRoute(reject, 788, errors.New("Reply|需ex。"))
+		return
 	}
 	if len(c.ex) != 4 {
-		return errors.New("Reply|ex长度不为4。")
+		c.Node.sidecar.ErrorRoute(reject, 789, errors.New("Reply|ex长度不为4。"))
+		return
 	}
 	id := util.BytesToUint16(c.ex[:2])
 	channel := util.BytesToUint16(c.ex[2:])
 	fs := transport.NewFrameSlice(channel, data, nil)
-	c.sidecar.Specify(id, channel, fs)
-	return nil
+	c.sidecar.Specify(id, channel, fs, reject)
 }
 
+/*
 //Next 下一个 pipeline模式 发布使用Ventilator，后续服务用Next，最后一个服务不得使用Next
-func (c *ContextMQ) Next(data []byte) error {
+func (c *ContextMQ) Next(data []byte, reject func(error)) {
 	if c.ex == nil {
-		return errors.New("Next|需ex。")
+		reject(errors.New("Next|需ex。"))
+		return
 	}
 	if len(c.ex) < 2 {
-		return errors.New("Next|最后一个服务不得使用Next。")
+		reject(errors.New("Next|最后一个服务不得使用Next。"))
+		return
 	}
 	channel := util.BytesToUint16(c.ex[:2])
 	fs := transport.NewFrameSlice(channel, data, c.ex[2:])
-	return c.sidecar.AskOne(channel, fs)
+	c.sidecar.AskOne(channel, fs, reject)
 }
+*/

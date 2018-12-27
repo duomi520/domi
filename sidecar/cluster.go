@@ -11,18 +11,19 @@ import (
 	"github.com/duomi520/domi/util"
 )
 
-//Specify 请求
-func (c *cluster) Specify(id, channel uint16, fs transport.FrameSlice) error {
+//Specify 指定请求
+func (c *cluster) Specify(id, channel uint16, fs transport.FrameSlice, reject uint16) {
 	s := atomic.LoadUint32(&c.sessionsState[id])
 	m := (*member)(atomic.LoadPointer(&c.sessions[id]))
 	if m != nil && s == util.StateWork {
-		return m.WriteFrameDataToCache(fs)
+		m.WriteFrameDataToCache(fs, reject)
+		return
 	}
-	return nil
+	c.handler.ErrorRoute(reject, 922, errors.New("Specify|请求失败！"))
 }
 
 //AskOne 请求某一个
-func (c *cluster) AskOne(channel uint16, fs transport.FrameSlice) error {
+func (c *cluster) AskOne(channel uint16, fs transport.FrameSlice, reject uint16) {
 	b := (*bucket)(atomic.LoadPointer(&c.channels[channel]))
 	if b != nil {
 		for {
@@ -31,20 +32,22 @@ func (c *cluster) AskOne(channel uint16, fs transport.FrameSlice) error {
 			s := atomic.LoadUint32(&c.sessionsState[id])
 			m := (*member)(atomic.LoadPointer(&c.sessions[id]))
 			if m != nil && s == util.StateWork {
-				return m.WriteFrameDataToCache(fs)
+				m.WriteFrameDataToCache(fs, reject)
+				return
 			}
 			count++
 			if count > l {
-				return fmt.Errorf("AskOne|bucket.sets未发现 %d,id=%d,l=%d", channel, id, l)
+				c.handler.ErrorRoute(reject, 923, fmt.Errorf("AskOne|bucket.sets未发现 %d,id=%d,l=%d", channel, id, l))
+				return
 			}
 		}
 	}
-	return fmt.Errorf("AskOne|bucket 未发现频道 %d", channel)
+	c.handler.ErrorRoute(reject, 924, fmt.Errorf("AskOne|bucket 未发现频道 %d", channel))
+
 }
 
 //AskAll 请求所有
-func (c *cluster) AskAll(channel uint16, fs transport.FrameSlice) error {
-	var err error
+func (c *cluster) AskAll(channel uint16, fs transport.FrameSlice, reject uint16) {
 	b := (*bucket)(atomic.LoadPointer(&c.channels[channel]))
 	if b != nil {
 		l := len(b.sets)
@@ -53,14 +56,12 @@ func (c *cluster) AskAll(channel uint16, fs transport.FrameSlice) error {
 			s := atomic.LoadUint32(&c.sessionsState[id])
 			m := (*member)(atomic.LoadPointer(&c.sessions[id]))
 			if m != nil && s == util.StateWork {
-				//只记录最后一个错误
-				err = m.WriteFrameDataToCache(fs)
+				m.WriteFrameDataToCache(fs, reject)
 			}
 		}
-	} else {
-		err = fmt.Errorf("AskAll|bucket 未发现频道 %d", channel)
+		return
 	}
-	return err
+	c.handler.ErrorRoute(reject, 925, fmt.Errorf("AskAll|bucket 未发现频道 %d", channel))
 }
 
 type member struct {
@@ -68,6 +69,8 @@ type member struct {
 }
 
 type cluster struct {
+	handler *transport.Handler
+
 	sessions      [1024]unsafe.Pointer  //*member	原子操作
 	sessionsState [1024]uint32          //状态		原子操作
 	channels      [65536]unsafe.Pointer //*bucket	原子操作
@@ -81,9 +84,10 @@ type cluster struct {
 	Logger *util.Logger
 }
 
-func newCluster(name, HTTPPort, TCPPort string, operation interface{}, logger *util.Logger) (*cluster, error) {
+func newCluster(h *transport.Handler, name, HTTPPort, TCPPort string, operation interface{}, logger *util.Logger) (*cluster, error) {
 	var err error
 	c := &cluster{
+		handler:   h,
 		readyChan: make(chan struct{}),
 		Logger:    logger,
 	}

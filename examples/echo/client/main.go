@@ -25,9 +25,10 @@ func main() {
 	}
 	app.RunAssembly(r)
 	r.Subscribe(ChannelRpl, pong)
-	if err := r.Call(ChannelMsg, []byte("ping"), ChannelRpl); err != nil {
-		log.Fatalln(err.Error())
-	}
+	r.RejectFunc(100, func(status int, err error) {
+		log.Fatalln(status, err.Error())
+	})
+	r.Call(ChannelMsg, []byte("ping"), ChannelRpl, 100)
 	app.Guard()
 }
 func pong(ctx *domi.ContextMQ) {

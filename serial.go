@@ -11,12 +11,13 @@ import (
 )
 
 var globalContextMQHandler [65536]func(*ContextMQ)
+var globalRejectFunc [65536]func(int, error)
 
 //Serial 串行处理
 //一个协程处理一个serial,以避免锁的问题，同时减少协程切换，提高cpu利用率。
 //按时间轮来分配cpu，不适用于cpu密集计算或长IO场景。
 type Serial struct {
-	SnippetDuration time.Duration //定时调用的时间间隔
+	SnippetDuration time.Duration //定时调用的时间间隔。
 	channelMap      map[uint16]uint16
 	bags            []*bag
 
@@ -48,7 +49,7 @@ func (s *Serial) Init() {
 	s.InitRingBuffer(s.RingBufferSize)
 	s.channelMap = make(map[uint16]uint16, 256)
 	s.bags = make([]*bag, 0, 64)
-	s.unsubscribeChan = make(chan []uint16, 64)
+	s.unsubscribeChan = make(chan []uint16, 128)
 	s.stopChan = make(chan struct{})
 	s.SetState(util.StatePause)
 }
@@ -58,6 +59,11 @@ func (s *Serial) WaitInit() {}
 
 //Run 定时工作
 func (s *Serial) Run() {
+	defer func() {
+		if recover := recover(); recover != nil {
+			s.Logger.Error("Run|异常拦截：", recover, string(debug.Stack()))
+		}
+	}()
 	snippet := time.NewTicker(s.SnippetDuration)
 	s.SetState(util.StateWork)
 	for {
@@ -112,9 +118,15 @@ func (s *Serial) assignmentTask() {
 	data, available := s.ReadFromRingBuffer()
 	for available != 0 {
 		fs := transport.DecodeByBytes(data)
-		c.Request = fs.GetData()
-		c.ex = fs.GetExtend()
-		globalContextMQHandler[fs.GetFrameType()](c)
+		ft := fs.GetFrameType()
+		if ft == transport.FrameSerialRejectFunc {
+			data := fs.GetData()
+			globalRejectFunc[util.BytesToUint16(data[:2])](int(util.BytesToInt64(data[2:10])), errors.New(string(data[10:])))
+		} else {
+			c.Request = fs.GetData()
+			c.ex = fs.GetExtend()
+			globalContextMQHandler[fs.GetFrameType()](c)
+		}
 		s.SetAvailableCursor(available)
 		data, available = s.ReadFromRingBuffer()
 	}
@@ -140,56 +152,50 @@ func (s *Serial) assignmentTask() {
 
 //serialProcessWrapper
 func (s *Serial) serialProcessWrapper(se transport.Session) error {
-	return s.WriteToRingBuffer(se.GetFrameSlice().GetAll())
-}
-
-//abnormal 异常拦截
-func (s *Serial) abnormal(f func(*ContextMQ)) func(*ContextMQ) {
-	return func(c *ContextMQ) {
-		defer func() {
-			if r := recover(); r != nil {
-				s.Logger.Error("abnormal|异常拦截：", r, string(debug.Stack()))
-			}
-		}()
-		f(c)
+	if s.HasWork() {
+		return s.WriteToRingBuffer(se.GetFrameSlice().GetAll())
 	}
-}
-
-//abnormals 异常拦截
-func (s *Serial) abnormals(f func(*ContextMQs)) func(*ContextMQs) {
-	return func(c *ContextMQs) {
-		defer func() {
-			if r := recover(); r != nil {
-				s.Logger.Error("abnormal|异常拦截：", r, string(debug.Stack()))
-			}
-		}()
-		f(c)
-	}
+	return nil
 }
 
 //Subscribe 订阅频道，需在serial运行前执行（线程不安全）。
-func (s *Serial) Subscribe(channel uint16, f func(*ContextMQ)) error {
+func (s *Serial) Subscribe(channel uint16, f func(*ContextMQ)) {
 	if s.HasWork() {
-		return errors.New("Subscribe|Serial已运行,需在serial运行前执行。")
+		s.Logger.Error("Subscribe|Serial已运行,需在serial运行前执行。")
 	}
-	globalContextMQHandler[channel] = s.abnormal(f)
+	globalContextMQHandler[channel] = f
 	s.Node.sidecar.HandleFunc(channel, s.serialProcessWrapper)
 	s.channelMap[channel] = channel
 	s.Node.sidecar.SetChannel(uint16(s.Node.sidecar.MachineID), channel, 3)
-	return nil
+}
+
+//RejectFunc 内部错误处理函数
+func (s *Serial) RejectFunc(u16 uint16, f func(int, error)) {
+	if s.HasWork() {
+		s.Logger.Error("RejectFunc|Serial已运行,需在serial运行前执行。")
+	}
+	globalRejectFunc[u16] = f
+	s.Node.sidecar.ErrorFunc(u16, func(status int, err error) {
+		if s.HasWork() {
+			e := err.Error()
+			data := make([]byte, len(e)+10)
+			util.CopyUint16(data[:2], u16)
+			util.CopyInt64(data[2:10], int64(status))
+			copy(data[10:], util.StringToBytes(e))
+			fs := transport.NewFrameSlice(transport.FrameSerialRejectFunc, data, nil)
+			s.WriteToRingBuffer(fs.GetAll())
+		}
+	})
 }
 
 //SubscribeRace 订阅一组频道,某一频道收到信息后，执行f，需在serial运行前执行（线程不安全）。
-func (s *Serial) SubscribeRace(channels []uint16, f func(*ContextMQ)) error {
+func (s *Serial) SubscribeRace(channels []uint16, f func(*ContextMQ)) {
 	if s.HasWork() {
-		return errors.New("SubscribeRace|Serial已运行,需在serial运行前执行。")
+		s.Logger.Error("SubscribeRace|Serial已运行,需在serial运行前执行。")
 	}
 	for _, a := range channels {
-		if err := s.Subscribe(a, f); err != nil {
-			return err
-		}
+		s.Subscribe(a, f)
 	}
-	return nil
 }
 
 //ContextMQs 上下文
@@ -230,14 +236,14 @@ func (bi bagAndIndex) serialProcessWrapper(c *ContextMQ) {
 }
 
 //SubscribeAll 订阅一组频道,全部频道都收到信息后，执行f，需在serial运行前执行（线程不安全）。
-func (s *Serial) SubscribeAll(channels []uint16, fs func(*ContextMQs)) error {
+func (s *Serial) SubscribeAll(channels []uint16, fs func(*ContextMQs)) {
 	if s.HasWork() {
-		return errors.New("SubscribeAll|Serial已运行,需在serial运行前执行。")
+		s.Logger.Error("SubscribeAll|Serial已运行,需在serial运行前执行。")
 	}
 	b := &bag{
 		channelsSize: len(channels),
 		channels:     channels,
-		fs:           s.abnormals(fs),
+		fs:           fs,
 		buf:          make([][]byte, len(channels)),
 	}
 	s.bags = append(s.bags, b)
@@ -245,11 +251,8 @@ func (s *Serial) SubscribeAll(channels []uint16, fs func(*ContextMQs)) error {
 	ba.bag = b
 	for i, a := range channels {
 		ba.index = i
-		if err := s.Subscribe(a, ba.serialProcessWrapper); err != nil {
-			return err
-		}
+		s.Subscribe(a, ba.serialProcessWrapper)
 	}
-	return nil
 }
 
 //UnsubscribeGroup 退订频道

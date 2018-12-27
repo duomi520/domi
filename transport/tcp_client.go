@@ -18,6 +18,7 @@ type ClientTCP struct {
 	Ctx     context.Context
 	conn    *net.TCPConn
 	URL     string
+	limiter *util.Limiter
 	handler *Handler
 
 	Logger   *util.Logger
@@ -25,7 +26,7 @@ type ClientTCP struct {
 }
 
 //NewClientTCP 新建
-func NewClientTCP(ctx context.Context, url string, h *Handler, sd *util.Dispatcher) (*ClientTCP, error) {
+func NewClientTCP(ctx context.Context, url string, h *Handler, sd *util.Dispatcher, limiter *util.Limiter) (*ClientTCP, error) {
 	logger, _ := util.NewLogger(util.ErrorLevel, "")
 	if h == nil {
 		return nil, errors.New("NewClientTCP|Handler不为nil。")
@@ -45,10 +46,11 @@ func NewClientTCP(ctx context.Context, url string, h *Handler, sd *util.Dispatch
 		Ctx:     ctx,
 		conn:    conn,
 		URL:     url,
+		limiter: limiter,
 		handler: h,
 		Logger:  logger,
 	}
-	c.Csession = NewSessionTCP(conn, c.Logger)
+	c.Csession = NewSessionTCP(conn, c.handler)
 	c.Csession.dispatcher = sd
 	//设置IO超时
 	if err := conn.SetWriteDeadline(time.Now().Add(DefaultDeadlineDuration)); err != nil {
@@ -93,18 +95,23 @@ func (c *ClientTCP) Run() {
 	}()
 	c.Logger.Debug(fmt.Sprintf("Run|连接到服务器%s。", c.URL))
 	for {
-	loop:
-		if err := c.Csession.ioRead(); err != nil {
+		n, err := c.Csession.ioRead()
+		if err != nil {
 			if err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
 				c.Logger.Error("Run|ioRead错误：", err.Error())
 			}
 			return
 		}
+		//限流器阻塞
+		if c.limiter != nil {
+			c.limiter.Wait(int64(n))
+		}
+		//处理数据
 		for {
 			ft := c.Csession.getFrameType()
 			if err := c.handler.route(ft, c.Csession); err != nil {
 				if ft == FrameTypeNil {
-					goto loop
+					break
 				}
 				if ft == FrameTypeExit {
 					return

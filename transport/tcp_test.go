@@ -20,9 +20,9 @@ func Test_tcpServer(t *testing.T) {
 	go sd.Run()
 	ctx, ctxExitFunc := context.WithCancel(context.Background())
 	h := NewHandler()
-	s := NewServerTCP(ctx, ":4568", h, sd)
+	s := NewServerTCP(ctx, ":4568", h, sd, nil)
 	go s.Run()
-	c, err := NewClientTCP(context.TODO(), "127.0.0.1:4568", h, sd)
+	c, err := NewClientTCP(context.TODO(), "127.0.0.1:4568", h, sd, nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -43,11 +43,11 @@ func Test_tcpServerPingPong(t *testing.T) {
 	loop2 := loop1 * 2
 	ctx, ctxExitFunc := context.WithCancel(context.Background())
 	h := NewHandler()
-	s := NewServerTCP(ctx, ":4569", h, sd)
+	s := NewServerTCP(ctx, ":4569", h, sd, nil)
 	go s.Run()
 	h.HandleFunc(55, testPingFunc55)
 	h.HandleFunc(56, testPingFunc56)
-	c, err := NewClientTCP(context.TODO(), "127.0.0.1:4569", h, sd)
+	c, err := NewClientTCP(context.TODO(), "127.0.0.1:4569", h, sd, nil)
 	h.HandleFunc(FrameTypePong, testPongFunc)
 	if err != nil {
 		t.Error(err)
@@ -64,9 +64,7 @@ func Test_tcpServerPingPong(t *testing.T) {
 	for i := loop1; i < loop2; i++ {
 		data := "ping" + strconv.Itoa(i)
 		f := NewFrameSlice(56, []byte(data), nil)
-		if err := c.Csession.WriteFrameDataToCache(f); err != nil {
-			t.Error(err)
-		}
+		c.Csession.WriteFrameDataToCache(f, 0)
 	}
 	time.Sleep(1500 * time.Millisecond)
 	c.Csession.Close()
@@ -97,9 +95,7 @@ func testPingFunc55(s Session) error {
 }
 func testPingFunc56(s Session) error {
 	atomic.LoadInt32(&testPingFuncNum)
-	if err := s.WriteFrameDataToCache(FramePong); err != nil {
-		fmt.Println(err.Error())
-	}
+	s.WriteFrameDataToCache(FramePong, 0)
 	atomic.AddInt32(&testPingFuncNum, 1)
 	return nil
 }
@@ -109,4 +105,37 @@ func testPongFunc(s Session) error {
 	}
 	atomic.AddInt32(&testPongFuncNum, 1)
 	return nil
+}
+
+func Test_tcpReject(t *testing.T) {
+	sd := util.NewDispatcher(32)
+	go sd.Run()
+	ctx, ctxExitFunc := context.WithCancel(context.Background())
+	h := NewHandler()
+	h.HandleFunc(65, func(s Session) error {
+		return nil
+	})
+	h.ErrorFunc(66, func(fi int, fe error) {
+		if fe == nil {
+			t.Fatal(fi, fe.Error())
+		}
+	})
+	s := NewServerTCP(ctx, ":4570", h, sd, nil)
+	go s.Run()
+	c, err := NewClientTCP(context.TODO(), "127.0.0.1:4570", h, sd, nil)
+	if err != nil {
+		t.Error(err)
+	}
+	go c.Run()
+	time.Sleep(50 * time.Millisecond)
+	f := NewFrameSlice(65, []byte("reject"), nil)
+	c.Csession.token = 5000
+	c.Csession.WriteFrameDataToCache(f, 66)
+	time.Sleep(150 * time.Millisecond)
+	c.Csession.Close()
+	time.Sleep(150 * time.Millisecond)
+	ctxExitFunc()
+	time.Sleep(150 * time.Millisecond)
+	sd.Close()
+	time.Sleep(150 * time.Millisecond)
 }

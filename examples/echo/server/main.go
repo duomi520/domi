@@ -29,5 +29,8 @@ func main() {
 }
 func ping(ctx *domi.ContextMQ) {
 	log.Println(string(ctx.Request))
-	ctx.Reply([]byte("pong"))
+	ctx.Node.RejectFunc(100, func(status int, err error) {
+		log.Println(status, err.Error())
+	})
+	ctx.Reply([]byte("pong"), 100)
 }

@@ -17,7 +17,8 @@ type Sidecar struct {
 	Ctx      context.Context
 	exitFunc func()
 
-	Dispatcher *util.Dispatcher
+	dispatcher *util.Dispatcher
+	limiter    *util.Limiter
 	tcpServer  *transport.ServerTCP
 	httpServer *http.Server
 
@@ -25,7 +26,7 @@ type Sidecar struct {
 
 	readyChan chan struct{}
 
-	sOnce sync.Once
+	doOnce sync.Once
 
 	Logger *util.Logger
 	*transport.Handler
@@ -33,7 +34,7 @@ type Sidecar struct {
 }
 
 //NewSidecar 新建
-func NewSidecar(ctx context.Context, cancel func(), name, HTTPPort, TCPPort string, operation interface{}) *Sidecar {
+func NewSidecar(ctx context.Context, cancel func(), name, HTTPPort, TCPPort string, operation interface{}, lr, ls int64) *Sidecar {
 	logger, _ := util.NewLogger(util.DebugLevel, "")
 	s := &Sidecar{
 		Ctx:       ctx,
@@ -44,13 +45,20 @@ func NewSidecar(ctx context.Context, cancel func(), name, HTTPPort, TCPPort stri
 	}
 	var err error
 	//监视
-	s.cluster, err = newCluster(name, HTTPPort, TCPPort, operation, logger)
+	s.cluster, err = newCluster(s.Handler, name, HTTPPort, TCPPort, operation, logger)
 	if err != nil {
 		s.Logger.Fatal(err)
 	}
-	s.Dispatcher = util.NewDispatcher(256)
+	s.dispatcher = util.NewDispatcher(256)
+	//限流器
+	if lr > 0 && ls > 0 {
+		if transport.BytesPoolLenght >= int(ls) {
+			s.Logger.Fatal("NewSidecar|限流器的的大小小于读取缓存。")
+		}
+		s.limiter = &util.Limiter{Rate: lr, BucketLimit: ls}
+	}
 	//tcp支持
-	s.tcpServer = transport.NewServerTCP(ctx, TCPPort, s.Handler, s.Dispatcher)
+	s.tcpServer = transport.NewServerTCP(ctx, TCPPort, s.Handler, s.dispatcher, s.limiter)
 	if s.tcpServer == nil {
 		s.Logger.Error("NewSidecar|NewServerTCP失败:" + TCPPort)
 		return nil
@@ -89,6 +97,10 @@ func (s *Sidecar) Run() {
 	heartbeatSlice := make([]*transport.ClientTCP, len(s.GetInitAddress()))
 	heartbeat := time.NewTicker(transport.DefaultHeartbeatDuration)
 	defer heartbeat.Stop()
+	//启动限流器
+	if s.limiter != nil {
+		go s.limiter.Run()
+	}
 	//启动http
 	go func() {
 		s.Logger.Info("Run|HTTP监听端口", s.HTTPPort)
@@ -97,7 +109,7 @@ func (s *Sidecar) Run() {
 		}
 	}()
 	//启动tcp
-	go s.Dispatcher.Run()
+	go s.dispatcher.Run()
 	s.Logger.Info("Run|TCP监听端口", s.TCPPort)
 	s.RunAssembly(s.tcpServer)
 	//与其它服务器建立连接
@@ -124,14 +136,16 @@ func (s *Sidecar) Run() {
 			s.SetState(util.StateDie)
 			s.Wait()
 			s.httpServer.Shutdown(context.TODO())
-			s.Dispatcher.Close()
+			s.dispatcher.Close()
+			if s.limiter != nil {
+				s.limiter.Close()
+			}
 			s.Logger.Info("Run|Sidecar关闭。")
 			if err := s.DisconDistributer(); err != nil {
 				s.Logger.Error(err)
 			}
 			return
 		}
-
 	}
 }
 
@@ -148,7 +162,7 @@ func (s *Sidecar) dialNode(heartbeatSlice []*transport.ClientTCP) {
 	data := make([]byte, 2)
 	fs := transport.NewFrameSlice(transport.FrameTypeNodeName, data, nil)
 	for i, node := range s.GetInitAddress() {
-		cli, err := transport.NewClientTCP(s.Ctx, s.getURLTCP(node), s.Handler, s.Dispatcher)
+		cli, err := transport.NewClientTCP(s.Ctx, s.getURLTCP(node), s.Handler, s.dispatcher, s.limiter)
 		if err != nil {
 			s.Logger.Error("Run|错误：" + err.Error())
 			continue
@@ -156,7 +170,7 @@ func (s *Sidecar) dialNode(heartbeatSlice []*transport.ClientTCP) {
 		cli.Logger.SetMark(fmt.Sprintf("%d", s.MachineID))
 		s.RunAssembly(cli)
 		util.CopyUint16(fs.GetData(), s.machineID)
-		err = cli.Csession.WriteFrameDataToCache(fs)
+		err = cli.Csession.WriteFrameDataPromptly(fs)
 		if err != nil {
 			s.Logger.Error("Run|错误：" + err.Error())
 			continue
@@ -175,7 +189,7 @@ func (s *Sidecar) echo(w http.ResponseWriter, r *http.Request) {
 //exit 退出  TODO 安全 加认证
 func (s *Sidecar) exit(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "exit")
-	s.sOnce.Do(func() {
+	s.doOnce.Do(func() {
 		s.exitFunc()
 	})
 }

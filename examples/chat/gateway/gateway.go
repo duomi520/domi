@@ -99,8 +99,11 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 	}
 	gate.connMap.Store(conn.RemoteAddr(), conn)
 	defer gate.connMap.Delete(conn.RemoteAddr())
-	node.Notify(ChannelJoin, nil)
-	defer node.Notify(ChannelLeave, nil)
+	node.RejectFunc(99, func(status int, err error) {
+		log.Fatal(status, err.Error())
+	})
+	node.Notify(ChannelJoin, nil, 99)
+	defer node.Notify(ChannelLeave, nil, 99)
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
@@ -109,10 +112,7 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		err = node.Notify(ChannelMsg, message)
-		if err != nil {
-			log.Println("err:", err)
-		}
+		node.Notify(ChannelMsg, message, 99)
 	}
 
 }
