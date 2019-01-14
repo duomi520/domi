@@ -6,21 +6,12 @@ import (
 	"sync/atomic"
 )
 
-//定义状态
-const (
-	StateDie uint32 = 1 + iota
-	StateWork
-	StatePause
+//定义错误
+var (
+	ErrRingBufferOverflow    = errors.New("util.ErrRingBufferOverflow|环形数组已满。")
+	ErrRingBufferClose       = errors.New("util.ErrRingBufferClose|环形数组已关闭。")
+	ErrWriteToRingBufferData = errors.New("util.ErrWriteToRingBufferData|写入环形数组的长度小于4。")
 )
-
-//ErrRingBufferOverflow 环形数组已满。
-var ErrRingBufferOverflow = errors.New("util.ErrRingBufferOverflow|环形数组已满。")
-
-//ErrRingBufferClose 环形数组已关闭。
-var ErrRingBufferClose = errors.New("util.ErrRingBufferClose|环形数组已关闭。")
-
-//ErrWriteToRingBufferData 写入环形数组的长度小于4。
-var ErrWriteToRingBufferData = errors.New("util.ErrWriteToRingBufferData|写入环形数组的长度小于4。")
 
 //RingBuffer 环形数组
 //多生产者，单消费者模式。

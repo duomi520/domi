@@ -75,10 +75,9 @@ func (r *room) stop() {
 }
 func (r *room) rec(ctx *domi.ContextMQ) {
 	log.Println(string(ctx.Request))
-	ctx.Node.RejectFunc(100, func(status int, err error) {
-		log.Println(status, err.Error())
+	ctx.Publish(ChannelRoom, ctx.Request, func(err error) {
+		log.Println(err.Error())
 	})
-	ctx.Publish(ChannelRoom, ctx.Request, 100)
 }
 func (r *room) join(ctx *domi.ContextMQ) {
 	atomic.AddInt32(&r.count, 1)

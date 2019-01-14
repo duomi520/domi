@@ -63,10 +63,9 @@ func (r *room) Run() {
 		select {
 		case data := <-r.recChan:
 			log.Println(string(data))
-			r.N.RejectFunc(100, func(status int, err error) {
-				log.Println(status, err.Error())
+			r.N.Publish(ChannelRoom, data, func(err error) {
+				log.Println(err.Error())
 			})
-			r.N.Publish(ChannelRoom, data, 100)
 		case <-r.joinChan:
 			r.count++
 		case <-r.leaveChan:

@@ -11,7 +11,6 @@ import (
 )
 
 var globalContextMQHandler [65536]func(*ContextMQ)
-var globalRejectFunc [65536]func(int, error)
 
 //Serial 串行处理
 //一个协程处理一个serial,以避免锁的问题，同时减少协程切换，提高cpu利用率。
@@ -26,13 +25,17 @@ type Serial struct {
 
 	*Node
 
+	rejectFuncChan  chan errAndFunc
 	unsubscribeChan chan []uint16
-	stopChan        chan struct{} //退出信号
-	closeOnce       sync.Once
+
+	stopChan  chan struct{} //退出信号
+	closeOnce sync.Once
 }
 
 //Close 关闭
 func (s *Serial) Close() {
+	s.SetState(util.StateDie)
+	time.Sleep(10 * s.SnippetDuration)
 	s.closeOnce.Do(func() {
 		close(s.stopChan)
 	})
@@ -49,6 +52,7 @@ func (s *Serial) Init() {
 	s.InitRingBuffer(s.RingBufferSize)
 	s.channelMap = make(map[uint16]uint16, 256)
 	s.bags = make([]*bag, 0, 64)
+	s.rejectFuncChan = make(chan errAndFunc, 1024)
 	s.unsubscribeChan = make(chan []uint16, 128)
 	s.stopChan = make(chan struct{})
 	s.SetState(util.StatePause)
@@ -70,6 +74,8 @@ func (s *Serial) Run() {
 		select {
 		case <-snippet.C:
 			s.assignmentTask()
+		case rejectFunc := <-s.rejectFuncChan:
+			rejectFunc.f(rejectFunc.err)
 		case u := <-s.unsubscribeChan:
 			l := len(s.bags)
 			if l > 0 {
@@ -87,13 +93,10 @@ func (s *Serial) Run() {
 		case <-s.Node.sidecar.Ctx.Done():
 			s.Close()
 		case <-s.stopChan:
-			//停止输入
-			s.SetState(util.StateDie)
 			snippet.Stop()
 			for k := range s.channelMap {
 				s.Unsubscribe(k)
 			}
-			time.Sleep(5 * s.SnippetDuration)
 			s.assignmentTask()
 			//5分钟后强制释放，如果部分Handler时间超过5分钟，最后释放时会产生异常。
 			time.AfterFunc(5*time.Minute, func() {
@@ -105,6 +108,7 @@ func (s *Serial) Run() {
 				s.channelMap = nil
 				s.ReleaseRingBuffer()
 				s.bags = nil
+				close(s.rejectFuncChan)
 				close(s.unsubscribeChan)
 			})
 			return
@@ -118,15 +122,9 @@ func (s *Serial) assignmentTask() {
 	data, available := s.ReadFromRingBuffer()
 	for available != 0 {
 		fs := transport.DecodeByBytes(data)
-		ft := fs.GetFrameType()
-		if ft == transport.FrameSerialRejectFunc {
-			data := fs.GetData()
-			globalRejectFunc[util.BytesToUint16(data[:2])](int(util.BytesToInt64(data[2:10])), errors.New(string(data[10:])))
-		} else {
-			c.Request = fs.GetData()
-			c.ex = fs.GetExtend()
-			globalContextMQHandler[fs.GetFrameType()](c)
-		}
+		c.Request = fs.GetData()
+		c.ex = fs.GetExtend()
+		globalContextMQHandler[fs.GetFrameType()](c)
 		s.SetAvailableCursor(available)
 		data, available = s.ReadFromRingBuffer()
 	}
@@ -150,7 +148,6 @@ func (s *Serial) assignmentTask() {
 	}
 }
 
-//serialProcessWrapper
 func (s *Serial) serialProcessWrapper(se transport.Session) error {
 	if s.HasWork() {
 		return s.WriteToRingBuffer(se.GetFrameSlice().GetAll())
@@ -167,25 +164,6 @@ func (s *Serial) Subscribe(channel uint16, f func(*ContextMQ)) {
 	s.Node.sidecar.HandleFunc(channel, s.serialProcessWrapper)
 	s.channelMap[channel] = channel
 	s.Node.sidecar.SetChannel(uint16(s.Node.sidecar.MachineID), channel, 3)
-}
-
-//RejectFunc 内部错误处理函数
-func (s *Serial) RejectFunc(u16 uint16, f func(int, error)) {
-	if s.HasWork() {
-		s.Logger.Error("RejectFunc|Serial已运行,需在serial运行前执行。")
-	}
-	globalRejectFunc[u16] = f
-	s.Node.sidecar.ErrorFunc(u16, func(status int, err error) {
-		if s.HasWork() {
-			e := err.Error()
-			data := make([]byte, len(e)+10)
-			util.CopyUint16(data[:2], u16)
-			util.CopyInt64(data[2:10], int64(status))
-			copy(data[10:], util.StringToBytes(e))
-			fs := transport.NewFrameSlice(transport.FrameSerialRejectFunc, data, nil)
-			s.WriteToRingBuffer(fs.GetAll())
-		}
-	})
 }
 
 //SubscribeRace 订阅一组频道,某一频道收到信息后，执行f，需在serial运行前执行（线程不安全）。
@@ -269,4 +247,38 @@ func (s *Serial) UnsubscribeGroup(channels []uint16) error {
 	case <-time.After(64 * s.SnippetDuration):
 		return errors.New("UnsubscribeGroup|退订频道超时。")
 	}
+}
+
+type errAndFunc struct {
+	err error
+	f   func(error)
+}
+
+//serialRejectFuncWrapper 内部错误处理函数
+func (s *Serial) serialRejectFuncWrapper(f func(error)) func(error) {
+	return func(err error) {
+		if s.HasWork() {
+			c := errAndFunc{
+				err: err,
+				f:   f,
+			}
+			s.rejectFuncChan <- c
+		}
+	}
+}
+
+//Notify 不回复请求，申请一服务处理。
+func (s *Serial) Notify(channel uint16, data []byte, reject func(error)) {
+	s.Node.Notify(channel, data, s.serialRejectFuncWrapper(reject))
+}
+
+//Call 请求	request-reply模式, 1 Vs 1
+func (s *Serial) Call(channel uint16, data []byte, resolve uint16, reject func(error)) {
+	s.Node.Call(channel, data, resolve, s.serialRejectFuncWrapper(reject))
+}
+
+//Publish 发布，通知所有订阅频道的节点,1 Vs N
+//只有一个节点发表时为publisher-subscriber模式，所有节点都能发表为bus模式
+func (s *Serial) Publish(channel uint16, data []byte, reject func(error)) {
+	s.Node.Publish(channel, data, s.serialRejectFuncWrapper(reject))
 }

@@ -29,9 +29,9 @@ DOMI是个简单的开源的网络库，借助etcd来实现一个小规模的集
 
 TODO
 
-### 限流
+### 限流及熔断
 
-支持对TCP进行限流。
+支持限流及熔断保护。
 
 ### 规模可扩展
 
@@ -75,20 +75,18 @@ func main() {
     app.RunAssembly(r)
     //订阅频道ChannelRpl，关联到处理函数pong
     r.Subscribe(ChannelRpl, pong)
-    //注册处理错误的函数
-    r.RejectFunc(100, func(status int, err error){
-        if err != nil {
-             fmt.Println(err)
-        }
-    })
-    //请求频道ChannelMsg服务，发送[]byte(“ping”)，同时告知回复频道为ChannelRpl，发送失败处理函数编号100
-    r.Call(ChannelMsg, []byte("ping"), ChannelRpl, 100)
+    //请求频道ChannelMsg服务，发送[]byte(“ping”)，回复频道为ChannelRpl，失败处理函数为reject
+    r.Call(ChannelMsg, []byte("ping"), ChannelRpl, reject)
     //管理协程阻塞
     app.Guard()
 }
 //频道ChannelRpl的处理函数
 func pong(ctx *domi.ContextMQ) {
     fmt.Println(string(ctx.Request))
+}
+//失败处理函数
+func reject(err error) {
+   fmt.Println(err)
 }
 
 ```
@@ -102,8 +100,8 @@ Notify 不回复请求，申请一服务处理。
 ```golang
 func do() {
     ...
-    //往频道ChannelMsg发送[]byte("Hellow")，发送失败处理函数编号100
-    r.Notify(ChannelMsg, []byte("Hellow"), 100)
+    //往频道ChannelMsg发送[]byte("Hellow")，失败处理函数为reject
+    r.Notify(ChannelMsg, []byte("Hellow"), reject)
     ...
 }
 ```
@@ -113,8 +111,8 @@ Call 请求，申请一服务处理。
 ```golang
 func do() {
     ...
-    //往频道ChannelMsg发送[]byte("ping"),在函数pong中处理服务回复的信息，发送失败处理函数编号100
-    r.Call(ChannelMsg, []byte("ping"), ChannelRpl, 100)
+    //往频道ChannelMsg发送[]byte("ping"),回复频道为ChannelRpl，失败处理函数为reject
+    r.Call(ChannelMsg, []byte("ping"), ChannelRpl, reject)
     ...
 }
 ```
@@ -124,8 +122,8 @@ Publish 发布，通知所有订阅频道的节点。
 ```golang
 func do() {
     ...
-    //往频道ChannelMsg广播[]byte("Hellow")，发送失败处理函数编号100
-    r.Publish(ChannelMsg, []byte("Hellow"), 100)
+    //往频道ChannelMsg广播[]byte("Hellow")，失败处理函数为reject
+    r.Publish(ChannelMsg, []byte("Hellow"), reject)
     ...
 }
 ```
@@ -137,9 +135,9 @@ Subscribe 订阅频道，共用tcp读协程，不可有长时间的阻塞或IO�
 ```golang
 func do() {
     ...
-    //注册ChannelRpl的处理函数，回复[]byte("pong")
+    //注册ChannelRpl的处理函数，回复[]byte("pong")，失败处理函数为reject
     r.Subscribe(ChannelMsg, func(c *domi.ContextMQ) {
-        c.Reply([]byte("pong"), 100)
+        c.Reply([]byte("pong"), reject)
     })
     ...
 }
@@ -167,28 +165,15 @@ func do() {
 }
 ```
 
-RejectFunc 内部错误处理函数，编号仅内部有效。
-
-```golang
-func do() {
-    ...
-    //内部错误处理函数
-    r.RejectFunc(100, func(status int, err error) {
-        fmt.Println(status, err.Error())
-    })
-    ...
-}
-```
-
 ### 后处理
 
-Reply 回复，与Call配套，回复请求，发送失败处理函数编号100
+Reply 回复，与Call配套，回复请求，失败处理函数为reject
 
 ```golang
 func ping(c *domi.ContextMQ) {
     ...
-    //回复“pong”
-    c.Reply([]byte("pong"), 100)
+    //回复“pong”，失败处理函数为reject
+    c.Reply([]byte("pong"), reject)
     ...
 }
 ```
@@ -234,7 +219,7 @@ func do() {
 
 ### 串行模式特有API
 
-SubscribeRace 订阅频道组,某一频道收到信息后，执行处理函数，需在串行模式运行前执行（线程不安全）。
+SubscribeRace 订阅频道组,某一频道收到信息后，执行处理函数，需在串行模式运行前执行。
 
 ```golang
 func do() {
@@ -246,7 +231,7 @@ func do() {
 }
 ```
 
-SubscribeAll 订阅频道组,全部频道都收到信息后，执行处理函数，需在串行模式运行前执行（线程不安全）。
+SubscribeAll 订阅频道组,全部频道都收到信息后，执行处理函数，需在串行模式运行前执行。
 
 ```golang
 func do() {

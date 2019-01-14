@@ -14,14 +14,14 @@ import (
 
 //Node 节点
 type Node struct {
-	sidecar                 *sidecar.Sidecar
-	Ctx                     context.Context
-	ExitFunc                func()
-	Name, HTTPPort, TCPPort string
-	Endpoints               []string //etcd 地址
-	LimitRate               int64    //限流器速率
-	LimitSize               int64    //限流器大小
-	Logger                  *util.Logger
+	sidecar                      *sidecar.Sidecar
+	Ctx                          context.Context
+	ExitFunc                     func()
+	Name, HTTPPort, TCPPort      string
+	Endpoints                    []string //etcd 地址
+	util.LimiterConfigure                 //限流器配置
+	util.CircuitBreakerConfigure          //熔断器配置
+	Logger                       *util.Logger
 }
 
 //Run 运行
@@ -31,7 +31,7 @@ func (n *Node) Run() {
 
 //Init 初始化
 func (n *Node) Init() {
-	n.sidecar = sidecar.NewSidecar(n.Ctx, n.ExitFunc, n.Name, n.HTTPPort, n.TCPPort, n.Endpoints, n.LimitRate, n.LimitSize)
+	n.sidecar = sidecar.NewSidecar(n.Ctx, n.ExitFunc, n.Name, n.HTTPPort, n.TCPPort, n.Endpoints, &n.LimiterConfigure, &n.CircuitBreakerConfigure)
 	n.Logger = n.sidecar.Logger
 	n.Logger.SetLevel(util.ErrorLevel)
 }
@@ -100,11 +100,6 @@ func (n *Node) Subscribe(channel uint16, f func(*ContextMQ)) {
 	n.sidecar.SetChannel(uint16(n.sidecar.MachineID), channel, 3)
 }
 
-//RejectFunc 内部错误处理函数
-func (n *Node) RejectFunc(u16 uint16, f func(int, error)) {
-	n.sidecar.ErrorFunc(u16, f)
-}
-
 //
 func (pw processWrapper) processWrapper(s transport.Session) error {
 	defer func() {
@@ -132,18 +127,48 @@ func (n *Node) Unsubscribe(channel uint16) {
 }
 
 //Notify 不回复请求，申请一服务处理。
-func (n *Node) Notify(channel uint16, data []byte, reject uint16) {
+func (n *Node) Notify(channel uint16, data []byte, reject func(error)) {
 	fs := transport.NewFrameSlice(channel, data, nil)
 	n.sidecar.AskOne(channel, fs, reject)
 }
 
 //Call 请求	request-reply模式, 1 Vs 1
-func (n *Node) Call(channel uint16, data []byte, resolve, reject uint16) {
+func (n *Node) Call(channel uint16, data []byte, resolve uint16, reject func(error)) {
 	ex := make([]byte, 4)
 	util.CopyUint16(ex[:2], uint16(n.sidecar.MachineID))
-	util.CopyUint16(ex[2:], resolve)
+	util.CopyUint16(ex[2:4], resolve)
 	fs := transport.NewFrameSlice(channel, data, ex)
 	n.sidecar.AskOne(channel, fs, reject)
+}
+
+//Publish 发布，通知所有订阅频道的节点,1 Vs N
+//只有一个节点发表时为publisher-subscriber模式，所有节点都能发表为bus模式
+func (n *Node) Publish(channel uint16, data []byte, reject func(error)) {
+	fs := transport.NewFrameSlice(channel, data, nil)
+	n.sidecar.AskAll(channel, fs, reject)
+}
+
+//ContextMQ 上下文
+type ContextMQ struct {
+	*Node
+	Request []byte
+	ex      []byte
+}
+
+//Reply 回复 request-reply模式 。
+func (c *ContextMQ) Reply(data []byte, reject func(error)) {
+	if c.ex == nil {
+		reject(errors.New("Reply|需ex。"))
+		return
+	}
+	if len(c.ex) != 4 {
+		reject(errors.New("Reply|ex长度不为4。"))
+		return
+	}
+	id := util.BytesToUint16(c.ex[:2])
+	channel := util.BytesToUint16(c.ex[2:4])
+	fs := transport.NewFrameSlice(channel, data, nil)
+	c.sidecar.Specify(id, channel, fs, reject)
 }
 
 /*
@@ -161,39 +186,7 @@ func (n *Node) Ventilator(channel []uint16, data []byte, reject func(error)) {
 	fs := transport.NewFrameSlice(channel[0], data, vj[2:])
 	n.sidecar.AskOne(channel[0], fs, reject)
 }
-*/
 
-//Publish 发布，通知所有订阅频道的节点,1 Vs N
-//只有一个节点发表时为publisher-subscriber模式，所有节点都能发表为bus模式
-func (n *Node) Publish(channel uint16, data []byte, reject uint16) {
-	fs := transport.NewFrameSlice(channel, data, nil)
-	n.sidecar.AskAll(channel, fs, reject)
-}
-
-//ContextMQ 上下文
-type ContextMQ struct {
-	*Node
-	Request []byte
-	ex      []byte
-}
-
-//Reply 回复 request-reply模式 。
-func (c *ContextMQ) Reply(data []byte, reject uint16) {
-	if c.ex == nil {
-		c.Node.sidecar.ErrorRoute(reject, 788, errors.New("Reply|需ex。"))
-		return
-	}
-	if len(c.ex) != 4 {
-		c.Node.sidecar.ErrorRoute(reject, 789, errors.New("Reply|ex长度不为4。"))
-		return
-	}
-	id := util.BytesToUint16(c.ex[:2])
-	channel := util.BytesToUint16(c.ex[2:])
-	fs := transport.NewFrameSlice(channel, data, nil)
-	c.sidecar.Specify(id, channel, fs, reject)
-}
-
-/*
 //Next 下一个 pipeline模式 发布使用Ventilator，后续服务用Next，最后一个服务不得使用Next
 func (c *ContextMQ) Next(data []byte, reject func(error)) {
 	if c.ex == nil {

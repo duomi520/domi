@@ -14,19 +14,20 @@ import (
 
 //ServerTCP TCP服务
 type ServerTCP struct {
-	ctx         context.Context
-	dispatcher  *util.Dispatcher
-	limiter     *util.Limiter
-	tcpAddress  *net.TCPAddr
-	tcpListener *net.TCPListener
-	tcpPost     string
-	handler     *Handler
-	Logger      *util.Logger
+	ctx                           context.Context
+	dispatcher                    *util.Dispatcher //调度
+	limiter                       *util.Limiter    //限流器
+	tcpAddress                    *net.TCPAddr
+	tcpListener                   *net.TCPListener
+	tcpPost                       string //端口号
+	handler                       *Handler
+	Logger                        *util.Logger
+	*util.CircuitBreakerConfigure //熔断器配置
 	util.WaitGroupWrapper
 }
 
 //NewServerTCP 新建
-func NewServerTCP(ctx context.Context, post string, h *Handler, sd *util.Dispatcher, limiter *util.Limiter) *ServerTCP {
+func NewServerTCP(ctx context.Context, post string, h *Handler, sd *util.Dispatcher, limiter *util.Limiter, cbc *util.CircuitBreakerConfigure) *ServerTCP {
 	logger, _ := util.NewLogger(util.ErrorLevel, "")
 	logger.SetMark("ServerTCP")
 	if h == nil {
@@ -48,6 +49,7 @@ func NewServerTCP(ctx context.Context, post string, h *Handler, sd *util.Dispatc
 		handler:     h,
 		Logger:      logger,
 	}
+	s.CircuitBreakerConfigure = cbc
 	return s
 }
 
@@ -102,7 +104,7 @@ func tcpReceive(s *ServerTCP, conn *net.TCPConn) {
 			s.Logger.Error("tcpReceive|defer错误：", r, string(debug.Stack()))
 		}
 	}()
-	session := NewSessionTCP(conn, s.handler)
+	session := NewSessionTCP(conn, s.handler, s.CircuitBreakerConfigure)
 	session.dispatcher = s.dispatcher
 	s.Add(1)
 	defer func() {
@@ -151,13 +153,15 @@ func (s *ServerTCP) ioLoop(session *SessionTCP) error {
 		for {
 			ft := session.getFrameType()
 			if err := s.handler.route(ft, session); err != nil {
+				//读完缓存
 				if ft == FrameTypeNil {
 					break
 				}
+				//收到退出指令
 				if ft == FrameTypeExit {
 					return nil
 				}
-				return err
+				s.Logger.Error("ioLoop|:", err.Error())
 			}
 			session.r += int(util.BytesToUint32(session.rBuf[session.r : session.r+4]))
 		}

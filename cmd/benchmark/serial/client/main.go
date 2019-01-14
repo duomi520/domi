@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
@@ -43,27 +42,29 @@ func main() {
 	app.RunAssembly(s)
 	s.Subscribe(ChannelRpl, pong)
 	lose := 0
-	s.RejectFunc(55, func(status int, err error) {
-		if strings.Contains(err.Error(), "ErrConnClose|SessionTCP已关闭") {
-			log.Fatalln(status, err.Error())
-		}
-		lose++
-		clientNwg.Done()
-		if lose > 1000 {
-			log.Fatalln("lose太多。")
-		}
-	})
-	s.RejectFunc(56, func(status int, err error) {
-		log.Fatalln(err.Error())
-	})
-	loop := 2000 //20000
+	loop := 200  //20000
 	gNum := 1000 //1000
 	clientNwg.Add(loop * gNum)
 	start := time.Now()
 	for j := 0; j < gNum; j++ {
 		go func() {
 			for i := 0; i < loop; i++ {
-				s.Call(ChannelMsg, []byte("ping"), ChannelRpl, 55)
+				s.Call(ChannelMsg, []byte("ping"), ChannelRpl, func(err error) {
+					/*
+						if strings.Contains(err.Error(), "ErrConnClose|SessionTCP已关闭") {
+							log.Fatalln(err.Error())
+						}
+						if strings.Contains(err.Error(), "An existing connection was forcibly closed by the remote host.") {
+							log.Fatalln(err.Error())
+						}
+							log.Println(err.Error())
+					*/
+					lose++
+					clientNwg.Done()
+					if lose > 1000 {
+						log.Fatalln("lose太多。 ", err.Error())
+					}
+				})
 			}
 		}()
 	}
@@ -99,13 +100,16 @@ func main() {
 		app.RunAssembly(n[i])
 		n[i].Subscribe(cr[i], pong)
 	}
-	loop = 1000 //10000
+	loop = 10 //10000
 	clientNwg.Add(loop * num)
 	start = time.Now()
 	for j := 0; j < num; j++ {
 		go func(k int) {
 			for i := 0; i < loop; i++ {
-				n[k].Call(ChannelMsg, []byte("ping"), cr[k], 56)
+				n[k].Call(ChannelMsg, []byte("ping"), cr[k], func(err error) {
+					clientNwg.Done()
+					log.Fatalln("num个节点 ", err.Error())
+				})
 			}
 		}(j)
 	}
@@ -113,10 +117,14 @@ func main() {
 	end = time.Now()
 	qps = float64(loop*num) / end.Sub(start).Seconds()
 	fmt.Printf("%d个Node运行Call:%6.0f\n", num, qps)
+
 	time.AfterFunc(time.Second, app.Stop)
 	app.Guard()
 }
 
 func pong(ctx *domi.ContextMQ) {
 	clientNwg.Done()
+}
+func errFunc(err error) {
+	log.Fatalln(err.Error())
 }

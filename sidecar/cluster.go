@@ -12,68 +12,62 @@ import (
 )
 
 //Specify 指定请求
-func (c *cluster) Specify(id, channel uint16, fs transport.FrameSlice, reject uint16) {
-	s := atomic.LoadUint32(&c.sessionsState[id])
-	m := (*member)(atomic.LoadPointer(&c.sessions[id]))
-	if m != nil && s == util.StateWork {
-		m.WriteFrameDataToCache(fs, reject)
+func (c *cluster) Specify(id, channel uint16, fs transport.FrameSlice, errFunc func(error)) {
+	m := (*transport.SessionTCP)(atomic.LoadPointer(&c.sessions[id]))
+	if m != nil {
+		if err := m.WriteFrameDataToCache(fs, errFunc); err != nil {
+			errFunc(err)
+		}
 		return
 	}
-	c.handler.ErrorRoute(reject, 922, errors.New("Specify|请求失败！"))
+	errFunc(errors.New("Specify|请求失败！"))
 }
 
 //AskOne 请求某一个
-func (c *cluster) AskOne(channel uint16, fs transport.FrameSlice, reject uint16) {
+func (c *cluster) AskOne(channel uint16, fs transport.FrameSlice, errFunc func(error)) {
 	b := (*bucket)(atomic.LoadPointer(&c.channels[channel]))
 	if b != nil {
 		for {
 			var count uint32
 			id, l := b.next()
-			s := atomic.LoadUint32(&c.sessionsState[id])
-			m := (*member)(atomic.LoadPointer(&c.sessions[id]))
-			if m != nil && s == util.StateWork {
-				m.WriteFrameDataToCache(fs, reject)
-				return
+			m := (*transport.SessionTCP)(atomic.LoadPointer(&c.sessions[id]))
+			if m != nil {
+				if err := m.WriteFrameDataToCache(fs, errFunc); err == nil {
+					return
+				}
 			}
 			count++
 			if count > l {
-				c.handler.ErrorRoute(reject, 923, fmt.Errorf("AskOne|bucket.sets未发现 %d,id=%d,l=%d", channel, id, l))
+				errFunc(fmt.Errorf("AskOne|bucket.sets未发现 %d,id=%d,l=%d", channel, id, l))
 				return
 			}
 		}
 	}
-	c.handler.ErrorRoute(reject, 924, fmt.Errorf("AskOne|bucket 未发现频道 %d", channel))
-
+	errFunc(fmt.Errorf("AskOne|bucket 未发现频道 %d", channel))
 }
 
 //AskAll 请求所有
-func (c *cluster) AskAll(channel uint16, fs transport.FrameSlice, reject uint16) {
+func (c *cluster) AskAll(channel uint16, fs transport.FrameSlice, errFunc func(error)) {
 	b := (*bucket)(atomic.LoadPointer(&c.channels[channel]))
 	if b != nil {
 		l := len(b.sets)
 		for i := 0; i < l; i++ {
 			id := b.sets[i]
-			s := atomic.LoadUint32(&c.sessionsState[id])
-			m := (*member)(atomic.LoadPointer(&c.sessions[id]))
-			if m != nil && s == util.StateWork {
-				m.WriteFrameDataToCache(fs, reject)
+			m := (*transport.SessionTCP)(atomic.LoadPointer(&c.sessions[id]))
+			if m != nil {
+				if err := m.WriteFrameDataToCache(fs, errFunc); err != nil {
+					errFunc(err)
+				}
 			}
 		}
 		return
 	}
-	c.handler.ErrorRoute(reject, 925, fmt.Errorf("AskAll|bucket 未发现频道 %d", channel))
-}
-
-type member struct {
-	transport.Session //会话
+	errFunc(fmt.Errorf("AskAll|bucket 未发现频道 %d", channel))
 }
 
 type cluster struct {
-	handler *transport.Handler
-
-	sessions      [1024]unsafe.Pointer  //*member	原子操作
-	sessionsState [1024]uint32          //状态		原子操作
-	channels      [65536]unsafe.Pointer //*bucket	原子操作
+	sessions [1024]unsafe.Pointer  //*sessions	原子操作
+	channels [65536]unsafe.Pointer //*bucket	原子操作
 
 	machineID uint16
 
@@ -84,10 +78,9 @@ type cluster struct {
 	Logger *util.Logger
 }
 
-func newCluster(h *transport.Handler, name, HTTPPort, TCPPort string, operation interface{}, logger *util.Logger) (*cluster, error) {
+func newCluster(name, HTTPPort, TCPPort string, operation interface{}, logger *util.Logger) (*cluster, error) {
 	var err error
 	c := &cluster{
-		handler:   h,
 		readyChan: make(chan struct{}),
 		Logger:    logger,
 	}
@@ -166,12 +159,14 @@ func (c *cluster) Run() {
 					c.Logger.Error("Run|", err.Error())
 				}
 			}
-
 		//状态
 		case sc := <-c.StateChan:
 			switch sc.operation {
 			case 1:
-				atomic.StoreUint32(&c.sessionsState[sc.id], sc.state)
+				m := (*transport.SessionTCP)(atomic.LoadPointer(&c.sessions[sc.id]))
+				if m != nil {
+					m.SetState(sc.state)
+				}
 			case 3: //PUT
 				if c.state != util.StateDie {
 					c.state = sc.state
@@ -181,7 +176,7 @@ func (c *cluster) Run() {
 						//关闭
 						//fmt.Println(c.MachineID, c.sessions[:4], c.sessionsState[:4], c.state)
 						for id := range c.sessions {
-							m := (*member)(atomic.LoadPointer(&c.sessions[id]))
+							m := (*transport.SessionTCP)(atomic.LoadPointer(&c.sessions[id]))
 							if m != nil {
 								m.Close()
 								atomic.StorePointer(&c.sessions[id], nil)
@@ -199,12 +194,10 @@ func (c *cluster) Run() {
 				m := atomic.LoadPointer(&c.sessions[nc.id])
 				if m != nil {
 					atomic.StorePointer(&c.sessions[nc.id], nil)
+					((*transport.SessionTCP)(m)).SetState(util.StateDie)
 				}
-				atomic.StoreUint32(&c.sessionsState[nc.id], 0)
 			case 3: //连接
-				m := &member{}
-				m.Session = nc.ss
-				atomic.StorePointer(&c.sessions[nc.id], unsafe.Pointer(m))
+				atomic.StorePointer(&c.sessions[nc.id], unsafe.Pointer(nc.ss))
 			}
 		}
 	}
@@ -212,14 +205,6 @@ func (c *cluster) Run() {
 
 //TODO 优化
 func (c *cluster) initStateAndChannels() error {
-	s, err := c.GetKey(context.TODO(), "state/")
-	if err != nil {
-		return err
-	}
-	for i := 0; i < len(s); i++ {
-		id := util.BytesToUint16(s[i][:2])
-		c.sessionsState[id] = util.BytesToUint32(s[i][2:6])
-	}
 	cl, err := c.GetKey(context.TODO(), "channel/")
 	if err != nil {
 		return err
@@ -299,7 +284,7 @@ func (c *cluster) GetState() uint32 {
 
 type nodeMsg struct {
 	id        uint16
-	ss        transport.Session
+	ss        *transport.SessionTCP
 	operation uint16
 }
 

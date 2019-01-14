@@ -28,11 +28,11 @@ func main() {
 	}
 	app.RunAssembly(s)
 	s.Subscribe(ChannelMsg, ping)
-	s.RejectFunc(55, func(status int, err error) {
-		log.Fatalln(status, err.Error())
-	})
 	app.Guard()
 }
 func ping(ctx *domi.ContextMQ) {
-	ctx.Reply([]byte("pong"), 55)
+	ctx.Reply([]byte("pong"), errFunc)
+}
+func errFunc(err error) {
+	log.Fatalln(err.Error())
 }

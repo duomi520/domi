@@ -17,8 +17,10 @@ type Sidecar struct {
 	Ctx      context.Context
 	exitFunc func()
 
-	dispatcher *util.Dispatcher
-	limiter    *util.Limiter
+	dispatcher              *util.Dispatcher
+	limiter                 *util.Limiter
+	circuitBreakerConfigure *util.CircuitBreakerConfigure
+
 	tcpServer  *transport.ServerTCP
 	httpServer *http.Server
 
@@ -34,7 +36,7 @@ type Sidecar struct {
 }
 
 //NewSidecar 新建
-func NewSidecar(ctx context.Context, cancel func(), name, HTTPPort, TCPPort string, operation interface{}, lr, ls int64) *Sidecar {
+func NewSidecar(ctx context.Context, cancel func(), name, HTTPPort, TCPPort string, operation interface{}, lc *util.LimiterConfigure, cc *util.CircuitBreakerConfigure) *Sidecar {
 	logger, _ := util.NewLogger(util.DebugLevel, "")
 	s := &Sidecar{
 		Ctx:       ctx,
@@ -45,20 +47,28 @@ func NewSidecar(ctx context.Context, cancel func(), name, HTTPPort, TCPPort stri
 	}
 	var err error
 	//监视
-	s.cluster, err = newCluster(s.Handler, name, HTTPPort, TCPPort, operation, logger)
+	s.cluster, err = newCluster(name, HTTPPort, TCPPort, operation, logger)
 	if err != nil {
 		s.Logger.Fatal(err)
 	}
 	s.dispatcher = util.NewDispatcher(256)
 	//限流器
-	if lr > 0 && ls > 0 {
-		if transport.BytesPoolLenght >= int(ls) {
+	if lc != nil && lc.LimitRate > 0 && lc.LimitSize > 0 {
+		if transport.BytesPoolLenght >= int(lc.LimitSize) {
 			s.Logger.Fatal("NewSidecar|限流器的的大小小于读取缓存。")
 		}
-		s.limiter = &util.Limiter{Rate: lr, BucketLimit: ls}
+		s.limiter = &util.Limiter{}
+		s.limiter.LimiterConfigure = lc
+	}
+	//熔断器
+	if cc == nil {
+		temp := util.NewCircuitBreakerConfigure()
+		s.circuitBreakerConfigure = &temp
+	} else {
+		s.circuitBreakerConfigure = cc
 	}
 	//tcp支持
-	s.tcpServer = transport.NewServerTCP(ctx, TCPPort, s.Handler, s.dispatcher, s.limiter)
+	s.tcpServer = transport.NewServerTCP(ctx, TCPPort, s.Handler, s.dispatcher, s.limiter, s.circuitBreakerConfigure)
 	if s.tcpServer == nil {
 		s.Logger.Error("NewSidecar|NewServerTCP失败:" + TCPPort)
 		return nil
@@ -162,7 +172,7 @@ func (s *Sidecar) dialNode(heartbeatSlice []*transport.ClientTCP) {
 	data := make([]byte, 2)
 	fs := transport.NewFrameSlice(transport.FrameTypeNodeName, data, nil)
 	for i, node := range s.GetInitAddress() {
-		cli, err := transport.NewClientTCP(s.Ctx, s.getURLTCP(node), s.Handler, s.dispatcher, s.limiter)
+		cli, err := transport.NewClientTCP(s.Ctx, s.getURLTCP(node), s.Handler, s.dispatcher, s.limiter, s.circuitBreakerConfigure)
 		if err != nil {
 			s.Logger.Error("Run|错误：" + err.Error())
 			continue
@@ -199,7 +209,7 @@ func (s *Sidecar) addSessionTCP(se transport.Session) error {
 	ft := se.GetFrameSlice()
 	id := util.BytesToUint16(ft.GetData())
 	if s.machineID != id {
-		s.NodeChan <- nodeMsg{id: id, ss: se, operation: 3}
+		s.NodeChan <- nodeMsg{id: id, ss: se.(*transport.SessionTCP), operation: 3}
 	}
 	return nil
 }

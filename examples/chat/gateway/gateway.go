@@ -99,11 +99,8 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 	}
 	gate.connMap.Store(conn.RemoteAddr(), conn)
 	defer gate.connMap.Delete(conn.RemoteAddr())
-	node.RejectFunc(99, func(status int, err error) {
-		log.Fatal(status, err.Error())
-	})
-	node.Notify(ChannelJoin, nil, 99)
-	defer node.Notify(ChannelLeave, nil, 99)
+	node.Notify(ChannelJoin, nil, reject)
+	defer node.Notify(ChannelLeave, nil, reject)
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
@@ -112,9 +109,12 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		node.Notify(ChannelMsg, message, 99)
+		node.Notify(ChannelMsg, message, reject)
 	}
 
+}
+func reject(err error) {
+	log.Fatal(err.Error())
 }
 
 type gateway struct {

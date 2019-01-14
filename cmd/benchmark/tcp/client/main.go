@@ -3,6 +3,7 @@
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"runtime"
 
@@ -15,6 +16,8 @@ import (
 
 var ping = []byte("ping")
 var pong = []byte("pong")
+var pingB = [12]byte{12, 0, 0, 0, 0, 0, 224, 0, 112, 105, 110, 103}
+var fsPing = transport.DecodeByBytes(pingB[:])
 
 func main() {
 	fmt.Println("本地机器的逻辑CPU个数:", runtime.NumCPU())
@@ -29,6 +32,7 @@ func main() {
 var clientNwg sync.WaitGroup
 
 func clientN(num int) {
+	cbc := util.NewCircuitBreakerConfigure()
 	sd := util.NewDispatcher(256)
 	go sd.Run()
 	defer sd.Close()
@@ -37,17 +41,11 @@ func clientN(num int) {
 	//	defer f.Close()
 	var err error
 	h := transport.NewHandler()
-	h.HandleFunc(transport.FrameTypePong, pongFunc)
-	h.ErrorFunc(78, func(status int, err error) {
-		if err != nil {
-			fmt.Println(err.Error())
-			os.Exit(1)
-		}
-	})
+	h.HandleFunc(225, pongFunc)
 	cs := make([]*transport.ClientTCP, num)
 	for i := 0; i < num; i++ {
 		k := i
-		cs[i], err = transport.NewClientTCP(context.TODO(), "127.0.0.1:4567", h, sd, nil)
+		cs[i], err = transport.NewClientTCP(context.TODO(), "127.0.0.1:4567", h, sd, nil, &cbc)
 		if err != nil {
 			fmt.Println("连接服务端失败:", err.Error())
 			os.Exit(1)
@@ -61,7 +59,9 @@ func clientN(num int) {
 	start := time.Now()
 	for i := 0; i < loop; i++ {
 		index := i % num
-		cs[index].Csession.WriteFrameDataToCache(transport.FramePing, 78)
+		if err := cs[index].Csession.WriteFrameDataToCache(fsPing, errorFunc); err != nil {
+			log.Fatalln("err:", err.Error())
+		}
 		//cs[index].Csession.WriteFrameDataPromptly(transport.FramePing)
 	}
 	clientNwg.Wait()
@@ -80,4 +80,7 @@ func pongFunc(s transport.Session) error {
 	//	fmt.Println(string(s.GetFrame().GetData()))
 	clientNwg.Done()
 	return nil
+}
+func errorFunc(err error) {
+	log.Fatalln("errorFunc:", err.Error())
 }

@@ -34,9 +34,8 @@ func reply(ctx *domi.ContextMQ) {
 		log.Fatalln(err.Error())
 	} else {
 		log.Println(m.Data)
-		ctx.Node.RejectFunc(100, func(status int, err error) {
-			log.Println(status, err.Error())
+		ctx.Reply([]byte(strings.ToUpper(m.Data)), func(err error) {
+			log.Println(err.Error())
 		})
-		ctx.Reply([]byte(strings.ToUpper(m.Data)), 100)
 	}
 }
